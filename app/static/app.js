@@ -2,11 +2,12 @@ class ObsidianReader {
     constructor() {
         this.currentFile = null;
         this.isDirty = false;
-        this.collapsedFolders = new Set();
+        this.expandedFolders = new Set();
         this.viewMode = 'home'; // home, reader
         this.previewEnabled = false;
         this.activeVault = localStorage.getItem('owr_vault') || '';
         this.themeConfig = JSON.parse(localStorage.getItem('owr_config') || '{}');
+        this.appTitle = 'OWS Obsidian Web Reader';
         this.init();
     }
 
@@ -15,11 +16,47 @@ class ObsidianReader {
         this.applyConfig();
         this.bindEvents();
         this.setupResize();
+        const deepLink = this.getDeepLink();
+        if (deepLink.vault !== null) {
+            this.activeVault = deepLink.vault;
+        }
         await this.loadVaults();
         await this.loadVaultName();
-        this.switchView('home');
+        if (deepLink.path) {
+            await this.openDeepLink(deepLink.path);
+        } else {
+            await this.switchView('home');
+            this.updateUrlForFile(null, { replace: true });
+        }
         this.setupAutoSave();
         this.connectWebSocket();
+    }
+
+    getDeepLink() {
+        const params = new URLSearchParams(window.location.search);
+        const path = (params.get('path') || params.get('file') || params.get('note') || '').trim();
+        const vaultParam = params.has('vault') ? (params.get('vault') || '').trim() : null;
+        const vault = vaultParam === null ? null : (vaultParam === '/' ? '' : vaultParam.replace(/^\/+|\/+$/g, ''));
+        return { path: path.replace(/^\/+/, ''), vault };
+    }
+
+    async openDeepLink(path) {
+        await this.switchView('reader');
+        await this.loadFile(path, { replaceUrl: true });
+    }
+
+    getDeepLinkUrl(path) {
+        // Canonical deep link: /?path=Research%2Fnote.md, optionally /?vault=Work&path=Research%2Fnote.md.
+        const params = new URLSearchParams();
+        if (this.activeVault) params.set('vault', this.activeVault);
+        params.set('path', path);
+        return `${window.location.pathname}?${params.toString()}`;
+    }
+
+    updateUrlForFile(path, options = {}) {
+        const url = path ? this.getDeepLinkUrl(path) : window.location.pathname;
+        const method = options.replace ? 'replaceState' : 'pushState';
+        window.history[method]({}, '', url);
     }
 
     setupViewportHeight() {
@@ -72,6 +109,7 @@ class ObsidianReader {
             document.getElementById('reader-sidebar').classList.add('-translate-x-full');
             document.getElementById('sidebar-overlay').classList.add('hidden');
             this.switchView('home');
+            this.updateUrlForFile(null);
         });
         
         // Header title click -> Rename if in reader
@@ -80,6 +118,7 @@ class ObsidianReader {
                 this.showRenameModal();
             } else {
                 this.switchView('home');
+                this.updateUrlForFile(null);
             }
         });
         
@@ -107,10 +146,12 @@ class ObsidianReader {
 
         document.getElementById('config-cancel-btn').addEventListener('click', () => {
             this.switchView('home');
+            this.updateUrlForFile(null);
         });
         document.getElementById('config-save-btn').addEventListener('click', () => {
             this.saveConfig();
             this.switchView('home');
+            this.updateUrlForFile(null);
             // Reload all content to reflect new vault
             this.loadVaultName();
             this.loadRecentFiles();
@@ -295,7 +336,9 @@ class ObsidianReader {
             } else if (view === 'config') {
                 configBtn.classList.add('hidden');
             }
-            document.getElementById('header-title').textContent = `OWR - ${this.vaultName || 'VAULT'}`;
+            document.getElementById('header-title').textContent = `${this.appTitle} - ${this.vaultName || 'Vault'}`;
+            document.getElementById('header-title').title = this.appTitle;
+            document.title = this.appTitle;
         }
     }
 
@@ -319,10 +362,11 @@ class ObsidianReader {
             const response = await this.fetchApi('/api/vault-name');
             const data = await response.json();
             this.vaultName = data.name;
-            document.getElementById('header-title').textContent = `OWR - ${this.vaultName}`;
+            document.getElementById('header-title').textContent = `${this.appTitle} - ${this.vaultName}`;
+            document.getElementById('header-title').title = this.appTitle;
         } catch (error) {
             console.error('Failed to load vault name:', error);
-            this.vaultName = 'OBSIDIAN_READER';
+            this.vaultName = 'Obsidian Vault';
         }
     }
 
@@ -333,7 +377,7 @@ class ObsidianReader {
             const grid = document.getElementById('recent-files-grid');
             grid.innerHTML = '';
 
-            data.files.slice(0, 9).forEach(file => {
+            data.files.slice(0, 5).forEach(file => {
                 const date = new Date(file.mtime * 1000);
                 const dateStr = date.toISOString().split('T')[0];
                 const timeStr = date.toTimeString().split(' ')[0].substring(0, 5);
@@ -416,7 +460,7 @@ class ObsidianReader {
             fileElement.className = `file-item ${file.is_dir ? 'folder' : 'file'}`;
             fileElement.dataset.path = file.path;
 
-            const isExpanded = file.is_dir && !this.collapsedFolders.has(file.path);
+            const isExpanded = file.is_dir && this.expandedFolders.has(file.path);
             
             if (file.is_dir) {
                 const folderIcon = document.createElement('span');
@@ -502,11 +546,11 @@ class ObsidianReader {
             const isCurrentlyHidden = children.classList.contains('hidden');
             if (isCurrentlyHidden) {
                 children.classList.remove('hidden');
-                this.collapsedFolders.delete(folderPath);
+                this.expandedFolders.add(folderPath);
                 folderElement.querySelector('.folder-icon').textContent = '▼';
             } else {
                 children.classList.add('hidden');
-                this.collapsedFolders.add(folderPath);
+                this.expandedFolders.delete(folderPath);
                 folderElement.querySelector('.folder-icon').textContent = '▶';
             }
         }
@@ -552,7 +596,7 @@ class ObsidianReader {
                             const icon = parent.querySelector('.folder-icon');
                             if (icon) {
                                 icon.textContent = '▼';
-                                this.collapsedFolders.delete(parent.dataset.path);
+                                this.expandedFolders.add(parent.dataset.path);
                             }
                         }
                     }
@@ -572,11 +616,15 @@ class ObsidianReader {
         }
     }
 
-    async loadFile(path) {
+    async loadFile(path, options = {}) {
         if (this.isDirty) await this.saveFile();
 
         try {
             const response = await this.fetchApi(`/api/file?path=${encodeURIComponent(path)}`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
             const data = await response.json();
             
             document.getElementById('editor').value = data.content;
@@ -586,8 +634,11 @@ class ObsidianReader {
             
             if (this.previewEnabled) this.updatePreview();
             
-            const filename = path.split('/').pop();
-            document.getElementById('header-title').textContent = filename;
+            const title = document.getElementById('header-title');
+            title.textContent = path;
+            title.title = `Click to rename ${path}`;
+            document.title = `${path} - ${this.appTitle}`;
+            this.updateUrlForFile(path, { replace: options.replaceUrl === true });
             
             document.querySelectorAll('.file-item').forEach(item => item.classList.remove('selected'));
             document.querySelectorAll(`.file-item[data-path="${CSS.escape(path)}"]`).forEach(el => el.classList.add('selected'));
@@ -603,6 +654,9 @@ class ObsidianReader {
         } catch (error) {
             console.error('Failed to load file:', error);
             this.updateStatus('Failed to load ' + path);
+            const title = document.getElementById('header-title');
+            title.textContent = path;
+            title.title = `Failed to load ${path}`;
         }
     }
 

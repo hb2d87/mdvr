@@ -187,7 +187,7 @@ async def get_files(request: Request):
 
 @app.get("/api/recent")
 async def get_recent_files(request: Request):
-    """Get top 10 recently modified markdown files"""
+    """Get top 5 recently created or modified markdown files."""
     try:
         active_vault = get_active_vault(request)
         all_md_files = []
@@ -201,24 +201,30 @@ async def get_recent_files(request: Request):
                     rel_path = os.path.relpath(full_path, active_vault)
                     try:
                         mtime = os.path.getmtime(full_path)
+                        ctime = os.path.getctime(full_path)
+                        activity_time = max(mtime, ctime)
                         excerpt = ""
-                        with open(full_path, 'r', encoding='utf-8') as f:
+                        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                             excerpt = f.read(150).replace('\n', ' ').strip()
                         all_md_files.append({
                             "name": file,
                             "path": rel_path,
                             "is_dir": False,
-                            "mtime": mtime,
+                            # Keep mtime as the public timestamp for older UI code,
+                            # but rank it by the latest create/metadata-change or edit time.
+                            "mtime": activity_time,
+                            "modified_time": mtime,
+                            "created_time": ctime,
                             "excerpt": excerpt
                         })
                     except OSError:
                         pass
         
-        # Sort by mtime descending and take top 10
+        # Sort by latest created/metadata-change OR modified time and take top 5.
         all_md_files.sort(key=lambda x: x["mtime"], reverse=True)
-        top_10 = all_md_files[:10]
+        top_5 = all_md_files[:5]
         
-        return {"files": top_10}
+        return {"files": top_5}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

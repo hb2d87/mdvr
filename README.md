@@ -1,16 +1,19 @@
-# Markdown Vault Reader (mdvr)
+# OWS Obsidian Web Reader
 
-A high-performance, containerized web interface for reading and managing local markdown and excalidraw files vaults via a browser. Built with FastAPI and vanilla JavaScript.
+A high-performance, containerized web interface for reading and managing local Obsidian vaults via a browser. Built with FastAPI and vanilla JavaScript, featuring an industrial Teenage Engineering K.O.II aesthetic, full multi-vault support, and deep customization options.
+
+![OWS Obsidian Web Reader Demo](https://raw.githubusercontent.com/your-username/obsidian-web-reader/main/screenshot.png) <!-- Update with an actual screenshot -->
 
 ## Features
 
-- **Fast SPA:** Native fetch API and vanilla JS for an ultra-lightweight client.
-- **Multi-Vault Support:** Dynamically switch between multiple vaults mounted via Docker.
-- **Some Customization:** 
-  - Theme Presets
-  - Change Typography, Text Size, and global UI color overrides.
-- **File Management:** Create, Read, Update, Delete, and Rename your files directly in the browser.
-- **Responsive Design:** Somewhat fluid interface with a mobile-optimized drawer sidebar.
+- **Blazing Fast SPA:** Native fetch API and vanilla JS for an ultra-lightweight client.
+- **Multi-Vault Support:** Dynamically switch between multiple Obsidian vaults mounted via Docker.
+- **Deep Customization:** 
+  - 7 Built-in Theme Presets (K.O.II, Neon Cyberpunk, VS Code Dark+, etc.)
+  - Change Typography, Text Size, and global UI color overrides in real-time.
+- **Full File Management:** Create, Read, Update, Delete, and Rename your markdown files directly in the browser.
+- **Responsive Design:** Completely fluid interface with a mobile-optimized drawer sidebar.
+- **Deep Links:** Open a note directly from a browser URL.
 
 ## Prerequisites
 
@@ -37,10 +40,26 @@ A high-performance, containerized web interface for reading and managing local m
      obsidian-reader
    ```
 
-   If you have multiple vaults inside a parent directory, simply mount the parent directory. mdvr will automatically detect the subdirectories and let you switch between them dynamically in the Configuration menu.
+   If you have multiple vaults inside a parent directory, simply mount the parent directory. OWS Obsidian Web Reader will automatically detect the subdirectories and let you switch between them dynamically in the Configuration menu.
 
 3. **Access the Reader:**
    Open your browser and navigate to `http://localhost:3000` (or the port you mapped).
+
+## Deep Links
+
+Use the `path` query parameter to open a specific note directly in reader mode:
+
+```text
+http://localhost:3000/?path=Research%2Fnote.md
+```
+
+For a multi-vault mount, include the optional `vault` query parameter:
+
+```text
+http://localhost:3000/?vault=Work&path=Research%2Fnote.md
+```
+
+`path` is the canonical parameter. The frontend also accepts `file` and `note` as aliases for convenience.
 
 ## Configuration
 
