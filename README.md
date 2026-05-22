@@ -47,19 +47,45 @@ A high-performance, containerized web interface for reading and managing local O
 
 ## Deep Links
 
-Use the `path` query parameter to open a specific note directly in reader mode:
+Use the path-style route to open a specific note directly in reader mode:
 
 ```text
-http://localhost:3000/?path=Research%2Fnote.md
+http://localhost:3000/obsidian/Research/note.md
 ```
 
 For a multi-vault mount, include the optional `vault` query parameter:
 
 ```text
-http://localhost:3000/?vault=Work&path=Research%2Fnote.md
+http://localhost:3000/obsidian/Research/note.md?vault=Work
 ```
 
-`path` is the canonical parameter. The frontend also accepts `file` and `note` as aliases for convenience.
+The frontend still accepts `path`, `file`, and `note` query/hash aliases for backward compatibility, but `/obsidian/...` is now the canonical share format.
+
+## Telegram / local-network sharing
+
+When sharing a note link over Telegram, prefer the local network host used by the chat bridge:
+
+```text
+http://homeframe:3080/obsidian/Research/note.md
+```
+
+For clickable Telegram messages, format the link as Markdown:
+
+```markdown
+[Research/note.md](http://homeframe:3080/obsidian/Research/note.md)
+```
+
+To generate a link from a vault-relative path, use the helper:
+
+```bash
+python tools/ows_link.py "Research/note.md"
+python tools/ows_link.py --vault Work "Research/note.md"
+python tools/ows_link.py --raw "Research/note.md"
+python tools/ows_link.py --style query "Research/note.md"
+python tools/ows_link.py --style hash "Research/note.md"
+```
+
+`tools/ows_link.py` normalizes Windows separators, strips leading slashes, and emits a Telegram-friendly Markdown link using the slash-preserving path style by default.
 
 ## Configuration
 

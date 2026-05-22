@@ -34,9 +34,31 @@ class ObsidianReader {
 
     getDeepLink() {
         const params = new URLSearchParams(window.location.search);
-        const path = (params.get('path') || params.get('file') || params.get('note') || '').trim();
+        let path = (params.get('path') || params.get('file') || params.get('note') || '').trim();
         const vaultParam = params.has('vault') ? (params.get('vault') || '').trim() : null;
         const vault = vaultParam === null ? null : (vaultParam === '/' ? '' : vaultParam.replace(/^\/+|\/+$/g, ''));
+
+        if (!path) {
+            const hash = (window.location.hash || '').replace(/^#\/?/, '');
+            if (hash) {
+                const hashParams = new URLSearchParams(hash);
+                path = (hashParams.get('path') || hashParams.get('file') || hashParams.get('note') || hash).trim();
+            }
+        }
+
+        if (!path) {
+            const pathname = window.location.pathname.replace(/^\/+/, '');
+            if (pathname) {
+                const prefix = 'obsidian/';
+                if (pathname === 'obsidian' || pathname.startsWith(prefix)) {
+                    path = pathname === 'obsidian' ? '' : pathname.slice(prefix.length);
+                    try {
+                        path = decodeURIComponent(path);
+                    } catch (_) {}
+                }
+            }
+        }
+
         return { path: path.replace(/^\/+/, ''), vault };
     }
 
@@ -45,16 +67,26 @@ class ObsidianReader {
         await this.loadFile(path, { replaceUrl: true });
     }
 
+    encodePathSegments(path) {
+        return path
+            .split('/')
+            .filter(Boolean)
+            .map(segment => encodeURIComponent(segment))
+            .join('/');
+    }
+
     getDeepLinkUrl(path) {
-        // Canonical deep link: /?path=Research%2Fnote.md, optionally /?vault=Work&path=Research%2Fnote.md.
-        const params = new URLSearchParams();
-        if (this.activeVault) params.set('vault', this.activeVault);
-        params.set('path', path);
-        return `${window.location.pathname}?${params.toString()}`;
+        // Canonical deep link: /obsidian/Research/note.md, optionally with ?vault=Work.
+        const url = new URL(window.location.origin);
+        url.pathname = `/obsidian/${this.encodePathSegments(path)}`;
+        if (this.activeVault) url.searchParams.set('vault', this.activeVault);
+        return url.toString();
     }
 
     updateUrlForFile(path, options = {}) {
-        const url = path ? this.getDeepLinkUrl(path) : window.location.pathname;
+        const url = path
+            ? this.getDeepLinkUrl(path)
+            : (window.location.pathname.startsWith('/obsidian/') ? '/obsidian/' : '/');
         const method = options.replace ? 'replaceState' : 'pushState';
         window.history[method]({}, '', url);
     }
