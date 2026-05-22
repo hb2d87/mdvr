@@ -4,7 +4,7 @@ class ObsidianReader {
         this.isDirty = false;
         this.expandedFolders = new Set();
         this.viewMode = 'home'; // home, reader
-        this.previewEnabled = false;
+        this.previewEnabled = true;
         this.activeVault = localStorage.getItem('owr_vault') || '';
         this.themeConfig = JSON.parse(localStorage.getItem('owr_config') || '{}');
         this.appTitle = 'OWS Obsidian Web Reader';
@@ -81,6 +81,28 @@ class ObsidianReader {
         url.pathname = `/obsidian/${this.encodePathSegments(path)}`;
         if (this.activeVault) url.searchParams.set('vault', this.activeVault);
         return url.toString();
+    }
+
+    isVisibleFile(path) {
+        const lowerPath = (path || '').toLowerCase();
+        return lowerPath.endsWith('.md') || lowerPath.endsWith('.canvas');
+    }
+
+    syncPreviewMode() {
+        const editorContainer = document.getElementById('editor-container');
+        const preview = document.getElementById('preview-pane');
+        const icon = document.getElementById('preview-icon');
+        if (!editorContainer || !preview || !icon) return;
+
+        if (this.previewEnabled) {
+            editorContainer.classList.add('hidden');
+            preview.classList.remove('hidden');
+            icon.textContent = 'edit_note';
+        } else {
+            editorContainer.classList.remove('hidden');
+            preview.classList.add('hidden');
+            icon.textContent = 'visibility';
+        }
     }
 
     updateUrlForFile(path, options = {}) {
@@ -409,11 +431,14 @@ class ObsidianReader {
             const grid = document.getElementById('recent-files-grid');
             grid.innerHTML = '';
 
-            data.files.slice(0, 5).forEach(file => {
+            data.files
+                .filter(file => this.isVisibleFile(file.path))
+                .slice(0, 5)
+                .forEach(file => {
                 const date = new Date(file.mtime * 1000);
                 const dateStr = date.toISOString().split('T')[0];
                 const timeStr = date.toTimeString().split(' ')[0].substring(0, 5);
-                const title = file.name.replace('.md', '');
+                const title = file.name.replace(/\.(md|canvas)$/i, '');
                 
                 const folderPath = file.path.substring(0, file.path.lastIndexOf('/'));
 
@@ -488,6 +513,8 @@ class ObsidianReader {
         });
 
         sortedFiles.forEach(file => {
+            if (!file.is_dir && !this.isVisibleFile(file.path)) return;
+
             const fileElement = document.createElement('div');
             fileElement.className = `file-item ${file.is_dir ? 'folder' : 'file'}`;
             fileElement.dataset.path = file.path;
@@ -650,6 +677,10 @@ class ObsidianReader {
 
     async loadFile(path, options = {}) {
         if (this.isDirty) await this.saveFile();
+        if (!this.isVisibleFile(path)) {
+            this.updateStatus('Unsupported file type');
+            return;
+        }
 
         try {
             const response = await this.fetchApi(`/api/file?path=${encodeURIComponent(path)}`);
@@ -661,10 +692,11 @@ class ObsidianReader {
             
             document.getElementById('editor').value = data.content;
             this.currentFile = path;
+            this.previewEnabled = true;
             this.setDirty(false);
             this.updateHighlighting();
-            
-            if (this.previewEnabled) this.updatePreview();
+            this.syncPreviewMode();
+            this.updatePreview();
             
             const title = document.getElementById('header-title');
             title.textContent = path;
@@ -760,26 +792,21 @@ class ObsidianReader {
 
     togglePreview() {
         this.previewEnabled = !this.previewEnabled;
-        const editorContainer = document.getElementById('editor-container');
-        const preview = document.getElementById('preview-pane');
-        const icon = document.getElementById('preview-icon');
-
-        if (this.previewEnabled) {
-            editorContainer.classList.add('hidden');
-            preview.classList.remove('hidden');
-            icon.textContent = 'edit_note';
-            this.updatePreview();
-        } else {
-            editorContainer.classList.remove('hidden');
-            preview.classList.add('hidden');
-            icon.textContent = 'visibility';
-        }
+        this.syncPreviewMode();
+        if (this.previewEnabled) this.updatePreview();
     }
 
     updatePreview() {
         const content = document.getElementById('editor').value;
         const previewPane = document.getElementById('preview-pane');
         try {
+            if (this.currentFile && this.currentFile.toLowerCase().endsWith('.canvas')) {
+                previewPane.innerHTML = `
+                    <div class="mb-4 text-xs uppercase tracking-widest opacity-60">Canvas preview is shown as raw data in this build.</div>
+                    <pre class="whitespace-pre-wrap break-words">${this.escapeHtml(content)}</pre>
+                `;
+                return;
+            }
             previewPane.innerHTML = this.parseMarkdown(content);
         } catch (e) {
             previewPane.innerHTML = '<pre>' + this.escapeHtml(content) + '</pre>';
@@ -891,7 +918,7 @@ class ObsidianReader {
             error.classList.remove('hidden');
             return;
         }
-        if (!path.endsWith('.md')) path += '.md';
+        if (!/\.(md|canvas)$/i.test(path)) path += '.md';
 
         try {
             const response = await this.fetchApi('/api/files', {
@@ -945,7 +972,7 @@ class ObsidianReader {
             this.hideRenameModal();
             return;
         }
-        if (!newPath.endsWith('.md')) newPath += '.md';
+        if (!/\.(md|canvas)$/i.test(newPath)) newPath += '.md';
 
         try {
             const response = await this.fetchApi('/api/rename', {

@@ -11,7 +11,7 @@ A high-performance, containerized web interface for reading and managing local O
 - **Deep Customization:** 
   - 7 Built-in Theme Presets (K.O.II, Neon Cyberpunk, VS Code Dark+, etc.)
   - Change Typography, Text Size, and global UI color overrides in real-time.
-- **Full File Management:** Create, Read, Update, Delete, and Rename your markdown files directly in the browser.
+- **Full File Management:** Create, Read, Update, Delete, and Rename your markdown and canvas notes directly in the browser.
 - **Responsive Design:** Completely fluid interface with a mobile-optimized drawer sidebar.
 - **Deep Links:** Open a note directly from a browser URL.
 
@@ -61,6 +61,8 @@ http://localhost:3000/obsidian/Research/note.md?vault=Work
 
 The frontend still accepts `path`, `file`, and `note` query/hash aliases for backward compatibility, but `/obsidian/...` is now the canonical share format.
 
+The file browser shows folders plus `.md` and `.canvas` files. Canvas notes currently open in the same raw-data preview/editor flow; full visual canvas rendering is not implemented in this build.
+
 ## Telegram / local-network sharing
 
 When sharing a note link over Telegram, prefer the local network host used by the chat bridge:
@@ -85,7 +87,7 @@ python tools/ows_link.py --style query "Research/note.md"
 python tools/ows_link.py --style hash "Research/note.md"
 ```
 
-`tools/ows_link.py` normalizes Windows separators, strips leading slashes, and emits a Telegram-friendly Markdown link using the slash-preserving path style by default.
+`tools/ows_link.py` normalizes Windows separators, strips leading slashes, and emits a Telegram-friendly Markdown link using the slash-preserving path style by default. Vault targeting remains available via `--vault` for multi-vault setups.
 
 ## Configuration
 

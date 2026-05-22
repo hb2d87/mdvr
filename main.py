@@ -94,18 +94,66 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # Vault path - will be mounted in container
 VAULT_PATH = "/vault"
+VISIBLE_FILE_EXTENSIONS = {".md", ".canvas"}
+
+
+def is_hidden_name(name: str) -> bool:
+    return name.startswith('.')
+
+
+def is_visible_file(name: str) -> bool:
+    return not is_hidden_name(name) and os.path.splitext(name)[1].lower() in VISIBLE_FILE_EXTENSIONS
+
+
+def is_visible_dir(name: str) -> bool:
+    return not is_hidden_name(name)
+
+
+def resolve_vault_root(request: Request) -> str:
+    """Resolve the active vault to an absolute path under /vault."""
+    base = os.path.realpath(VAULT_PATH)
+    raw = request.headers.get("x-vault-path", "").strip().replace("\\", "/")
+
+    if raw in ("", "/"):
+        return base
+
+    relative = os.path.normpath(raw.strip("/"))
+    if relative in ("", "."):
+        return base
+
+    target = os.path.realpath(os.path.join(base, relative))
+    try:
+        if os.path.commonpath([base, target]) != base:
+            return base
+    except ValueError:
+        return base
+    return target
+
+
+def list_vault_names() -> List[str]:
+    """Return the vault options exposed to the frontend."""
+    vaults = ["/"]
+    try:
+        if os.path.isdir(VAULT_PATH):
+            for item in sorted(os.listdir(VAULT_PATH)):
+                full_item = os.path.join(VAULT_PATH, item)
+                if os.path.isdir(full_item) and is_visible_dir(item):
+                    vaults.append(item)
+    except Exception:
+        pass
+    return vaults
+
 
 def get_active_vault(request: Request) -> str:
-    subpath = request.headers.get("x-vault-path", "")
-    full_path = os.path.normpath(os.path.join(VAULT_PATH, subpath.strip('/')))
-    if not full_path.startswith(VAULT_PATH):
-        return VAULT_PATH
-    return full_path
+    return resolve_vault_root(request)
 
 def secure_path(vault_path: str, user_path: str) -> str:
     base = os.path.realpath(vault_path)
     target = os.path.realpath(os.path.join(base, user_path.strip('/')))
-    if not target.startswith(base):
+    try:
+        if os.path.commonpath([base, target]) != base:
+            raise HTTPException(status_code=403, detail="Path traversal detected")
+    except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal detected")
     return target
 
@@ -130,13 +178,16 @@ def build_file_tree(root_path: str, relative_path: str = "") -> List[FileItem]:
     
     try:
         for item in sorted(os.listdir(full_path)):
-            # Skip hidden files/directories except .metadata
-            if item.startswith('.') and item != '.metadata':
+            # Only expose folders plus .md and .canvas files.
+            if not (is_visible_dir(item) or is_visible_file(item)):
                 continue
-                
+
             item_path = os.path.join(relative_path, item) if relative_path else item
             full_item_path = os.path.join(full_path, item)
             is_dir = os.path.isdir(full_item_path)
+
+            if not is_dir and not is_visible_file(item):
+                continue
             
             # Get modified time
             mtime = 0.0
@@ -164,16 +215,7 @@ def build_file_tree(root_path: str, relative_path: str = "") -> List[FileItem]:
 @app.get("/api/vaults")
 async def get_vaults():
     """Get all top-level directories to act as vaults"""
-    vaults = ["/"]
-    try:
-        if os.path.exists(VAULT_PATH):
-            for item in sorted(os.listdir(VAULT_PATH)):
-                full_item = os.path.join(VAULT_PATH, item)
-                if os.path.isdir(full_item) and not item.startswith('.'):
-                    vaults.append(item)
-    except Exception:
-        pass
-    return {"vaults": vaults}
+    return {"vaults": list_vault_names()}
 
 @app.get("/api/files")
 async def get_files(request: Request):
@@ -187,38 +229,40 @@ async def get_files(request: Request):
 
 @app.get("/api/recent")
 async def get_recent_files(request: Request):
-    """Get top 5 recently created or modified markdown files."""
+    """Get top 5 recently created or modified markdown/canvas files."""
     try:
         active_vault = get_active_vault(request)
         all_md_files = []
         for root, dirs, files in os.walk(active_vault):
-            # Skip hidden directories except .metadata
-            dirs[:] = [d for d in dirs if not (d.startswith('.') and d != '.metadata')]
-            
+            # Only traverse visible folders.
+            dirs[:] = [d for d in dirs if is_visible_dir(d)]
+
             for file in files:
-                if file.endswith('.md') and not file.startswith('.'):
-                    full_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(full_path, active_vault)
-                    try:
-                        mtime = os.path.getmtime(full_path)
-                        ctime = os.path.getctime(full_path)
-                        activity_time = max(mtime, ctime)
-                        excerpt = ""
-                        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-                            excerpt = f.read(150).replace('\n', ' ').strip()
-                        all_md_files.append({
-                            "name": file,
-                            "path": rel_path,
-                            "is_dir": False,
-                            # Keep mtime as the public timestamp for older UI code,
-                            # but rank it by the latest create/metadata-change or edit time.
-                            "mtime": activity_time,
-                            "modified_time": mtime,
-                            "created_time": ctime,
-                            "excerpt": excerpt
-                        })
-                    except OSError:
-                        pass
+                if not is_visible_file(file):
+                    continue
+
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, active_vault)
+                try:
+                    mtime = os.path.getmtime(full_path)
+                    ctime = os.path.getctime(full_path)
+                    activity_time = max(mtime, ctime)
+                    excerpt = ""
+                    with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                        excerpt = f.read(150).replace('\n', ' ').strip()
+                    all_md_files.append({
+                        "name": file,
+                        "path": rel_path,
+                        "is_dir": False,
+                        # Keep mtime as the public timestamp for older UI code,
+                        # but rank it by the latest create/metadata-change or edit time.
+                        "mtime": activity_time,
+                        "modified_time": mtime,
+                        "created_time": ctime,
+                        "excerpt": excerpt
+                    })
+                except OSError:
+                    pass
         
         # Sort by latest created/metadata-change OR modified time and take top 5.
         all_md_files.sort(key=lambda x: x["mtime"], reverse=True)

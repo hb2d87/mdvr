@@ -68,7 +68,7 @@ def build_markdown_link(
     label: str | None = None,
     vault: str | None = None,
     base_url: str = DEFAULT_BASE_URL,
-    style: str = "query",
+    style: str = "path",
 ) -> str:
     url = build_url(path=path, vault=vault, base_url=base_url, style=style)
     link_label = label or path
