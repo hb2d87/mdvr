@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Telegram-friendly Obsidian Web Reader links.
+"""Build Telegram-friendly MDVR links.
 
 Examples:
   python tools/ows_link.py "Research/note.md"
@@ -8,7 +8,7 @@ Examples:
   python tools/ows_link.py --style hash "Research/note.md"
 
 By default the script emits a clickable Markdown link that points at the
-slash-preserving path-style OWS URL used in Telegram chats.
+slash-preserving path-style MDVR URL used in Telegram chats.
 """
 
 from __future__ import annotations
@@ -29,9 +29,11 @@ def normalize_path(path: str) -> str:
 
 def build_path_url(path: str, vault: str | None = None, base_url: str = DEFAULT_BASE_URL) -> str:
     safe_path = "/".join(quote(part, safe="") for part in path.split("/") if part)
-    url = f"{base_url}/obsidian/{safe_path}"
+    safe_vault = quote(vault, safe="") if vault else ""
+    prefix = f"/{safe_vault}" if safe_vault else ""
+    url = f"{base_url}{prefix}/{safe_path}"
     if vault:
-        url = f"{url}?vault={quote(vault, safe='')}"
+        return url
     return url
 
 
@@ -76,10 +78,10 @@ def build_markdown_link(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Convert note paths into OWS links")
+    parser = argparse.ArgumentParser(description="Convert note paths into MDVR links")
     parser.add_argument("path", help="Vault-relative note path, e.g. Research/note.md")
     parser.add_argument("--vault", default="", help="Optional vault name for multi-vault setups")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Base OWS URL (default: http://homeframe:3080)")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Base MDVR URL (default: http://homeframe:3080)")
     parser.add_argument("--label", default="", help="Markdown label to show instead of the raw path")
     parser.add_argument("--style", choices=("path", "query", "hash"), default="path", help="URL style to generate")
     parser.add_argument("--raw", action="store_true", help="Print the raw URL instead of a Markdown link")

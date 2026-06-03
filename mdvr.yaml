@@ -1,0 +1,53 @@
+app:
+  name: MDVR
+  description: Browser reader for markdown vaults
+
+server:
+  unknown_keys: fail
+  write_without_auth: warn
+  auth:
+    enabled: true
+    realm: MDVR
+    user: mdvr
+    password: change-me
+    file: /run/mdvr.htpasswd
+
+defaults:
+  mode: read-only
+  permissions:
+    files_format_read:
+      - .md
+      - .excalidraw
+      - .txt
+      - .jpg
+      - .jpeg
+      - .png
+      - .gif
+      - .webp
+      - .bmp
+      - .svg
+      - .ico
+      - .pdf
+    files_format_edit:
+      - .md
+      - .excalidraw
+      - .txt
+    files_format_new:
+      - .md
+      - .excalidraw
+      - .txt
+
+vaults:
+  - id: demo
+    name: Demo test vault
+    description: Internal vault for verifying MDVR write actions before mounting notes.
+    path: /app/welcome-vault
+    mode: read-write
+    permissions:
+      delete: true
+
+  - id: obsidian
+    name: Obsidian
+    description: Optional host Obsidian vault mount. Read-only for safety.
+    path: /vaults/obsidian
+    mode: read-only

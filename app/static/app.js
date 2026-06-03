@@ -1,13 +1,42 @@
 class ObsidianReader {
     constructor() {
+        this.ALL_VAULTS_ID = '__all__';
         this.currentFile = null;
+        this.currentMetadata = [[], [], []];
+        this.currentResolvedLinks = new Map();
         this.isDirty = false;
         this.expandedFolders = new Set();
         this.viewMode = 'home'; // home, reader
         this.previewEnabled = true;
-        this.activeVault = localStorage.getItem('owr_vault') || '';
-        this.themeConfig = JSON.parse(localStorage.getItem('owr_config') || '{}');
-        this.appTitle = 'OWS Obsidian Web Reader';
+        this.currentFileKind = null;
+        this.excalidrawBridge = null;
+        this.excalidrawModulePromise = null;
+        this.pdfjsModulePromise = null;
+        this.excalidrawMountToken = 0;
+        this.homeFileCount = 0;
+        this.homeRecentCount = 0;
+        this.homeRecentTotal = 0;
+        this.homeRecentLimit = this.getStoredRecentLimit();
+        this.vaultOptions = [];
+        this.vaultAliases = this.getStoredVaultAliases();
+        this.selectedVaultIds = this.getStoredSelectedVaultIds();
+        this.vaultPermissions = new Map();
+        this.fileMetadataByPath = new Map();
+        this.contextMenuVault = null;
+        this.contextMenuEnabled = true;
+        this.activeVault = this.normalizeVaultId(localStorage.getItem('mdvr_vault') || localStorage.getItem('owr_vault') || this.ALL_VAULTS_ID);
+        this.themeConfig = JSON.parse(localStorage.getItem('mdvr_config') || localStorage.getItem('owr_config') || '{}');
+        this.appTitle = 'MDVR - md_vault_reader';
+        this.permissions = {
+            read: true,
+            edit: false,
+            new_files: false,
+            rename: false,
+            delete: false,
+            files_format_read: ['.md', '.markdown', '.excalidraw', '.txt'],
+            files_format_edit: [],
+            files_format_new: []
+        };
         this.init();
     }
 
@@ -21,13 +50,9 @@ class ObsidianReader {
             this.activeVault = deepLink.vault;
         }
         await this.loadVaults();
+        await this.loadServerConfig();
         await this.loadVaultName();
-        if (deepLink.path) {
-            await this.openDeepLink(deepLink.path);
-        } else {
-            await this.switchView('home');
-            this.updateUrlForFile(null, { replace: true });
-        }
+        await this.openRoute(deepLink, { replaceUrl: true });
         this.setupAutoSave();
         this.connectWebSocket();
     }
@@ -36,7 +61,7 @@ class ObsidianReader {
         const params = new URLSearchParams(window.location.search);
         let path = (params.get('path') || params.get('file') || params.get('note') || '').trim();
         const vaultParam = params.has('vault') ? (params.get('vault') || '').trim() : null;
-        const vault = vaultParam === null ? null : (vaultParam === '/' ? '' : vaultParam.replace(/^\/+|\/+$/g, ''));
+        let vault = vaultParam === null ? null : (vaultParam === '/' ? '' : this.normalizeVaultId(vaultParam.replace(/^\/+|\/+$/g, '')));
 
         if (!path) {
             const hash = (window.location.hash || '').replace(/^#\/?/, '');
@@ -51,20 +76,230 @@ class ObsidianReader {
             if (pathname) {
                 const prefix = 'obsidian/';
                 if (pathname === 'obsidian' || pathname.startsWith(prefix)) {
+                    if (vault === null) vault = 'obsidian';
                     path = pathname === 'obsidian' ? '' : pathname.slice(prefix.length);
                     try {
                         path = decodeURIComponent(path);
                     } catch (_) {}
+                } else if (pathname === 'settings') {
+                    return { path: '', vault, view: 'config' };
+                } else if (pathname === 'home') {
+                    return { path: '', vault, view: 'home' };
+                } else {
+                    const segments = pathname.split('/').filter(Boolean);
+                    if (segments.length > 0) {
+                        if (vault === null) vault = this.normalizeVaultId(decodeURIComponent(segments[0]));
+                        path = segments.slice(1).join('/');
+                        try {
+                            path = decodeURIComponent(path);
+                        } catch (_) {}
+                    }
                 }
             }
         }
 
-        return { path: path.replace(/^\/+/, ''), vault };
+        return { path: path.replace(/^\/+/, ''), vault, view: path ? 'reader' : 'home' };
     }
 
-    async openDeepLink(path) {
+    async openRoute(route = this.getDeepLink(), options = {}) {
+        if (route.vault !== null && route.vault !== this.activeVault) {
+            this.setActiveVault(route.vault);
+            await this.loadServerConfig();
+            if (route.path) await this.loadActiveVaultName();
+            else await this.loadVaultName();
+        }
+        if (route.view === 'config') {
+            await this.switchView('config');
+            this.populateConfigUI();
+            if (options.replaceUrl) this.updateUrlForSettings({ replace: true });
+            return;
+        }
+        if (route.path) {
+            await this.loadActiveVaultName();
+            await this.openDeepLink(route.path, { replaceUrl: options.replaceUrl === true });
+            return;
+        }
+        await this.switchView('home');
+        if (options.replaceUrl) this.updateUrlForFile(null, { replace: true });
+    }
+
+    async openDeepLink(path, options = {}) {
         await this.switchView('reader');
-        await this.loadFile(path, { replaceUrl: true });
+        await this.loadFile(path, { replaceUrl: options.replaceUrl === true });
+    }
+
+    async openFile(path, options = {}) {
+        const vaultChanged = options.vault && options.vault !== this.activeVault;
+        if (vaultChanged) {
+            this.setActiveVault(options.vault);
+            await this.loadServerConfig();
+            await this.loadActiveVaultName();
+        } else if (options.vault) {
+            await this.loadActiveVaultName();
+        }
+        await this.switchView('reader');
+        await this.loadFile(path, options);
+    }
+
+    isAllVaults() {
+        return this.getSelectedVaultOptions().length > 1;
+    }
+
+    setActiveVault(vaultId) {
+        vaultId = this.normalizeVaultId(vaultId);
+        if (!vaultId || vaultId === this.activeVault) return;
+        this.activeVault = vaultId;
+        localStorage.setItem('mdvr_vault', this.activeVault);
+        localStorage.setItem('owr_vault', this.activeVault);
+    }
+
+    normalizeVaultId(vaultId) {
+        if (vaultId === 'real') return 'obsidian';
+        return vaultId;
+    }
+
+    getStoredVaultAliases() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem('mdvr_vault_aliases') || '{}');
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        } catch (_) {}
+        return {};
+    }
+
+    saveVaultAliases(aliases = this.vaultAliases) {
+        this.vaultAliases = Object.fromEntries(
+            Object.entries(aliases)
+                .map(([id, name]) => [id, String(name || '').trim()])
+                .filter(([, name]) => name)
+        );
+        localStorage.setItem('mdvr_vault_aliases', JSON.stringify(this.vaultAliases));
+    }
+
+    getStoredSelectedVaultIds() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem('mdvr_selected_vaults') || '[]');
+            if (Array.isArray(parsed)) return parsed.filter(id => typeof id === 'string' && id);
+        } catch (_) {}
+        return [];
+    }
+
+    saveSelectedVaultIds(ids = this.selectedVaultIds) {
+        const uniqueIds = [...new Set(ids.map(id => this.normalizeVaultId(id)).filter(Boolean))];
+        this.selectedVaultIds = uniqueIds;
+        localStorage.setItem('mdvr_selected_vaults', JSON.stringify(uniqueIds));
+    }
+
+    getReadableVaultOptions() {
+        return this.vaultOptions.filter(option => option.available && option.id !== this.ALL_VAULTS_ID);
+    }
+
+    getSelectedVaultOptions() {
+        const selected = this.getReadableVaultOptions().filter(option => this.selectedVaultIds.includes(option.id));
+        if (selected.length) return selected;
+        return this.getReadableVaultOptions().slice(0, 1);
+    }
+
+    normalizeSelectedVaults() {
+        const readable = this.getReadableVaultOptions();
+        const readableIds = readable.map(option => option.id);
+        let nextSelected = this.selectedVaultIds.filter(id => readableIds.includes(id));
+        const savedActiveVault = localStorage.getItem('mdvr_vault') || localStorage.getItem('owr_vault') || '';
+        if (!nextSelected.length && (this.activeVault === this.ALL_VAULTS_ID || savedActiveVault === this.ALL_VAULTS_ID)) {
+            nextSelected = readableIds;
+        }
+        if (!nextSelected.length && this.activeVault && readableIds.includes(this.activeVault)) {
+            nextSelected = [this.activeVault];
+        }
+        if (!nextSelected.length && readableIds.length) {
+            nextSelected = [readableIds[0]];
+        }
+        this.saveSelectedVaultIds(nextSelected);
+        if (!readableIds.includes(this.activeVault)) {
+            this.activeVault = nextSelected[0] || '';
+        }
+        if (this.activeVault) {
+            localStorage.setItem('mdvr_vault', this.activeVault);
+            localStorage.setItem('owr_vault', this.activeVault);
+        }
+    }
+
+    async fetchPermissionsForVault(vaultId) {
+        if (!vaultId || this.vaultPermissions.has(vaultId)) return this.vaultPermissions.get(vaultId);
+        try {
+            const data = await this.fetchJsonForVault(vaultId, '/api/config');
+            const permissions = data.permissions || this.allVaultPermissions();
+            this.vaultPermissions.set(vaultId, permissions);
+            return permissions;
+        } catch (_) {
+            const fallback = this.allVaultPermissions();
+            this.vaultPermissions.set(vaultId, fallback);
+            return fallback;
+        }
+    }
+
+    async loadSelectedVaultPermissions() {
+        await Promise.all(this.getSelectedVaultOptions().map(option => this.fetchPermissionsForVault(option.id)));
+    }
+
+    permissionsForVault(vaultId) {
+        if (vaultId && this.vaultPermissions.has(vaultId)) return this.vaultPermissions.get(vaultId);
+        if (!vaultId || vaultId === this.activeVault) return this.permissions;
+        return this.allVaultPermissions();
+    }
+
+    permissionsForContextMenu() {
+        return this.permissionsForVault(this.contextMenuVault || this.activeVault);
+    }
+
+    vaultLabel(vaultId) {
+        vaultId = this.normalizeVaultId(vaultId);
+        if (this.vaultAliases[vaultId]) return this.vaultAliases[vaultId];
+        const option = this.vaultOptions.find(v => v.id === vaultId);
+        return option?.name || vaultId || 'Vault';
+    }
+
+    async fetchJsonForVault(vaultId, url) {
+        const response = await this.fetchApiForVault(url, vaultId);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+    }
+
+    toVaultTreeNode(file, vaultOption) {
+        const identityPath = `${vaultOption.id}/${file.path}`;
+        return {
+            ...file,
+            path: identityPath,
+            open_path: file.path,
+            vault: vaultOption.id,
+            vaultName: this.vaultLabel(vaultOption.id),
+            children: (file.children || []).map(child => this.toVaultTreeNode(child, vaultOption)),
+        };
+    }
+
+    toVaultTreeRoot(files, vaultOption) {
+        return {
+            name: this.vaultLabel(vaultOption.id),
+            path: `__vault__/${vaultOption.id}`,
+            open_path: '',
+            is_dir: true,
+            vault: vaultOption.id,
+            vaultName: this.vaultLabel(vaultOption.id),
+            tags: [],
+            children: (files || []).map(file => this.toVaultTreeNode(file, vaultOption)),
+        };
+    }
+
+    allVaultPermissions() {
+        return {
+            read: true,
+            edit: false,
+            new_files: false,
+            rename: false,
+            delete: false,
+            files_format_read: ['*'],
+            files_format_edit: [],
+            files_format_new: []
+        };
     }
 
     encodePathSegments(path) {
@@ -75,17 +310,553 @@ class ObsidianReader {
             .join('/');
     }
 
-    getDeepLinkUrl(path) {
-        // Canonical deep link: /obsidian/Research/note.md, optionally with ?vault=Work.
+    getDeepLinkUrl(path, vaultId = this.activeVault) {
+        // Canonical deep link: /demo/Research/note.md.
         const url = new URL(window.location.origin);
-        url.pathname = `/obsidian/${this.encodePathSegments(path)}`;
-        if (this.activeVault) url.searchParams.set('vault', this.activeVault);
+        const vaultSegment = vaultId && vaultId !== '/' && vaultId !== this.ALL_VAULTS_ID ? this.encodePathSegments(vaultId) : 'vault';
+        url.pathname = `/${vaultSegment}/${this.encodePathSegments(path)}`;
         return url.toString();
     }
 
     isVisibleFile(path) {
-        const lowerPath = (path || '').toLowerCase();
-        return lowerPath.endsWith('.md') || lowerPath.endsWith('.canvas');
+        return this.matchesAllowedFormat(path, this.permissions.files_format_read || []);
+    }
+
+    getExtension(path) {
+        const match = (path || '').toLowerCase().match(/(\.[^./\\]+)$/);
+        return match ? match[1] : '';
+    }
+
+    matchesAllowedFormat(path, formats) {
+        if (!formats || !formats.length) return false;
+        if (formats.includes('*')) return true;
+        return formats.includes(this.getExtension(path));
+    }
+
+    canEditPath(path) {
+        return !!this.permissions.edit && this.matchesAllowedFormat(path, this.permissions.files_format_edit || []);
+    }
+
+    canCreatePath(path, permissions = this.permissions) {
+        return !!permissions.new_files && this.matchesAllowedFormat(path, permissions.files_format_new || []);
+    }
+
+    canRenamePath(path) {
+        return !!this.permissions.rename && this.matchesAllowedFormat(path, this.permissions.files_format_read || []);
+    }
+
+    getViewerKind(path) {
+        const ext = this.getExtension(path);
+        if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'].includes(ext)) return 'image';
+        if (ext === '.pdf') return 'pdf';
+        if (ext === '.excalidraw') return 'excalidraw';
+        if (this.matchesAllowedFormat(path, this.permissions.files_format_read || [])) return 'text';
+        return 'binary';
+    }
+
+    isEmbeddableMediaPath(path) {
+        return ['image', 'pdf'].includes(this.getViewerKind(path));
+    }
+
+    canAttachMedia() {
+        return this.viewMode === 'reader'
+            && !!this.currentFile
+            && this.getViewerKind(this.currentFile) === 'text'
+            && this.canEditPath(this.currentFile)
+            && !!this.permissions.new_files;
+    }
+
+    openMediaPicker() {
+        if (!this.canAttachMedia()) {
+            this.updateStatus('Media upload not allowed');
+            return;
+        }
+        document.getElementById('media-upload-input')?.click();
+    }
+
+    formatHeaderDateTime(epochSeconds) {
+        if (!epochSeconds) return { date: '', time: '' };
+        const date = new Date(epochSeconds * 1000);
+        const pad = (value) => String(value).padStart(2, '0');
+        return {
+            date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+            time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+        };
+    }
+
+    formatCompactHeaderDateTime(epochSeconds) {
+        if (!epochSeconds) return { date: '', time: '', title: '' };
+        const full = this.formatHeaderDateTime(epochSeconds);
+        return {
+            date: full.date,
+            time: full.time,
+            title: `${full.date} ${full.time}`,
+        };
+    }
+
+    getStoredRecentLimit() {
+        const parsed = Number.parseInt(localStorage.getItem('mdvr_recent_limit') || '5', 10);
+        if (!Number.isFinite(parsed)) return 5;
+        return Math.min(12, Math.max(1, parsed));
+    }
+
+    getDisplayTitle(path) {
+        const filename = (path || '').split('/').pop() || '';
+        return filename.replace(/\.(md|markdown|excalidraw)$/i, '');
+    }
+
+    getDisplayPath(path) {
+        return (path || '').replace(/^\/+/, '');
+    }
+
+    getDisplayFolderPath(path) {
+        const cleanPath = this.getDisplayPath(path);
+        const lastSlash = cleanPath.lastIndexOf('/');
+        if (lastSlash === -1) return '/';
+        return cleanPath.slice(0, lastSlash) || '/';
+    }
+
+    setHeaderFileInfo(path, epochSeconds) {
+        const titleEl = document.getElementById('header-title');
+        const pathEl = document.getElementById('header-path');
+        const dateEl = document.getElementById('header-date');
+        const timeEl = document.getElementById('header-time');
+        if (titleEl) {
+            titleEl.textContent = this.getDisplayTitle(path) || path || this.appTitle;
+            titleEl.title = path ? `Open ${path}` : this.appTitle;
+        }
+        if (pathEl) pathEl.textContent = path ? this.getDisplayFolderPath(path) : '';
+        const headerDt = this.formatCompactHeaderDateTime(epochSeconds);
+        if (dateEl) dateEl.textContent = headerDt.date;
+        if (timeEl) timeEl.textContent = headerDt.time;
+        const dtEl = document.getElementById('header-datetime');
+        if (dtEl) dtEl.title = headerDt.title;
+    }
+
+    setDownloadForPath(path, refresh = false) {
+        const downloadBtn = document.getElementById('download-current-file');
+        const headerNewBtn = document.getElementById('header-new-file-btn');
+        if (!downloadBtn || !path) return;
+        if (headerNewBtn) headerNewBtn.classList.add('hidden');
+        const icon = downloadBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'download';
+        downloadBtn.title = 'Download file';
+        downloadBtn.setAttribute('aria-label', 'Download file');
+        downloadBtn.disabled = false;
+        downloadBtn.classList.remove('hidden');
+        downloadBtn.onclick = () => this.downloadPath(path, refresh);
+    }
+
+    clearDownloadButton() {
+        const downloadBtn = document.getElementById('download-current-file');
+        if (!downloadBtn) return;
+        const icon = downloadBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'download';
+        downloadBtn.title = 'Download file';
+        downloadBtn.setAttribute('aria-label', 'Download file');
+        downloadBtn.disabled = false;
+        downloadBtn.classList.add('hidden');
+        downloadBtn.onclick = null;
+    }
+
+    getHomeCreateTarget() {
+        if (this.viewMode !== 'home') return null;
+        const writable = this.getSelectedVaultOptions()
+            .map(vault => ({ vault, permissions: this.permissionsForVault(vault.id) }))
+            .filter(entry => !!entry.permissions.new_files);
+        return writable.length === 1 ? writable[0] : null;
+    }
+
+    setHomeUploadButton() {
+        const uploadBtn = document.getElementById('download-current-file');
+        if (!uploadBtn || this.viewMode !== 'home') return;
+        const target = this.getHomeCreateTarget();
+        const canUpload = !!target
+            && ['.md', '.markdown', '.txt'].some(ext => (target.permissions.files_format_new || []).includes(ext));
+        if (!canUpload) {
+            this.clearDownloadButton();
+            return;
+        }
+        const icon = uploadBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'upload';
+        uploadBtn.title = 'Upload Markdown or text file';
+        uploadBtn.setAttribute('aria-label', 'Upload Markdown or text file');
+        uploadBtn.disabled = false;
+        uploadBtn.classList.remove('hidden');
+        uploadBtn.onclick = () => document.getElementById('home-upload-input')?.click();
+    }
+
+    downloadPath(path, refresh = false, vaultId = this.activeVault) {
+        const src = this.apiFileUrl(path, { refresh, vault: vaultId });
+        const a = document.createElement('a');
+        a.href = src;
+        a.download = path.split('/').pop() || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+
+    sanitizeHomeUploadFilename(name) {
+        const raw = String(name || '').replace(/\\/g, '/').split('/').pop().trim();
+        const clean = raw
+            .replace(/[<>:"|?*\x00-\x1F]+/g, '-')
+            .replace(/\s+/g, ' ')
+            .replace(/^\.+/, '')
+            .trim();
+        return clean || `uploaded-${Date.now()}.md`;
+    }
+
+    isHomeUploadPath(path, permissions = this.permissions) {
+        const ext = this.getExtension(path);
+        return ['.md', '.markdown', '.txt'].includes(ext)
+            && !!permissions.new_files
+            && this.matchesAllowedFormat(path, permissions.files_format_new || []);
+    }
+
+    async handleHomeUploadFiles(fileList) {
+        const files = [...(fileList || [])];
+        await this.loadSelectedVaultPermissions();
+        const target = this.getHomeCreateTarget();
+        if (!target) {
+            this.updateStatus('Select one writable vault');
+            return;
+        }
+        const { vault, permissions } = target;
+
+        let uploadedCount = 0;
+        let lastUploadedPath = '';
+        for (const file of files) {
+            const path = this.sanitizeHomeUploadFilename(file.name);
+            if (!this.isHomeUploadPath(path, permissions)) {
+                this.updateStatus('Only .md, .markdown, .txt uploads are allowed');
+                continue;
+            }
+            try {
+                const response = await this.fetchApiForVault('/api/files', vault.id, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path, content: await file.text() }),
+                });
+                if (response.status === 409) {
+                    this.updateStatus(`${path} already exists`);
+                    continue;
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                uploadedCount += 1;
+                lastUploadedPath = path;
+            } catch (error) {
+                console.error('Failed to upload text file:', error);
+                this.updateStatus(`Failed to upload ${path}`);
+            }
+        }
+
+        if (!uploadedCount) return;
+        await Promise.all([
+            this.loadRecentFiles(),
+            this.loadFileTree('file-tree'),
+        ]);
+        if (uploadedCount === 1) {
+            await this.openFile(lastUploadedPath, { vault: vault.id });
+        } else {
+            this.updateStatus(`Uploaded ${uploadedCount} files`);
+        }
+    }
+
+    async handleMediaFiles(fileList) {
+        const files = [...(fileList || [])].filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
+        if (!files.length) return;
+        if (!this.canAttachMedia()) {
+            this.updateStatus('Media upload not allowed');
+            return;
+        }
+        for (const file of files) {
+            try {
+                const uploaded = await this.uploadMediaFile(file);
+                const label = uploaded.name || file.name || uploaded.path.split('/').pop();
+                const markdown = uploaded.kind === 'pdf'
+                    ? `[${label}](${uploaded.path})`
+                    : `![${label}](${uploaded.path})`;
+                this.insertBlockAtCursor(markdown);
+                this.updateStatus(`Attached ${label}`);
+            } catch (error) {
+                console.error('Failed to attach media:', error);
+                this.updateStatus('Failed to attach media');
+            }
+        }
+        await this.loadFileTree('reader-file-tree');
+        await this.loadFileTree('file-tree');
+    }
+
+    async uploadMediaFile(file) {
+        const bytes = await file.arrayBuffer();
+        let binary = '';
+        const chunkSize = 0x8000;
+        const array = new Uint8Array(bytes);
+        for (let i = 0; i < array.length; i += chunkSize) {
+            binary += String.fromCharCode(...array.subarray(i, i + chunkSize));
+        }
+        const response = await this.fetchApi('/api/assets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                content_type: file.type,
+                content_base64: btoa(binary),
+                current_path: this.currentFile || '',
+            }),
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+        return response.json();
+    }
+
+    insertAtCursor(text) {
+        const editor = document.getElementById('editor');
+        if (!editor) return;
+        const start = editor.selectionStart ?? editor.value.length;
+        const end = editor.selectionEnd ?? start;
+        editor.value = `${editor.value.slice(0, start)}${text}${editor.value.slice(end)}`;
+        const next = start + text.length;
+        editor.selectionStart = next;
+        editor.selectionEnd = next;
+        editor.focus();
+        this.setDirty(true);
+        this.updateHighlighting();
+        if (this.previewEnabled) this.updatePreview();
+        this.saveFile();
+    }
+
+    insertBlockAtCursor(markdown) {
+        const editor = document.getElementById('editor');
+        if (!editor) return;
+        const start = editor.selectionStart ?? editor.value.length;
+        const needsLeadingBreak = start > 0 && editor.value[start - 1] !== '\n';
+        const text = `${needsLeadingBreak ? '\n' : ''}${markdown}\n`;
+        this.insertAtCursor(text);
+    }
+
+    setHomeHeader() {
+        const titleEl = document.getElementById('header-title');
+        const pathEl = document.getElementById('header-path');
+        this.clearDownloadButton();
+        if (titleEl) {
+            titleEl.textContent = 'MDVR';
+            titleEl.title = this.vaultName ? `MDVR - ${this.vaultName}` : 'MDVR';
+        }
+        if (pathEl) pathEl.textContent = 'Markdown vault reader';
+    }
+
+    formatTagQuery(tag) {
+        const cleanTag = String(tag || '').trim().replace(/^#+/, '');
+        return cleanTag ? `#${cleanTag}` : '';
+    }
+
+    applyHomeSearch(query) {
+        const search = document.getElementById('home-search');
+        if (search) search.value = query;
+        this.filterFiles(query, 'recent-files-grid');
+        this.filterFiles(query, 'file-tree');
+    }
+
+    syncHeaderDatetimeVisibility() {
+        const dtEl = document.getElementById('header-datetime');
+        if (!dtEl) return;
+        const shouldShow = this.viewMode === 'reader';
+        dtEl.classList.toggle('hidden', !shouldShow);
+        dtEl.style.display = shouldShow ? 'flex' : 'none';
+    }
+
+    showTextViewer() {
+        const binaryViewer = document.getElementById('binary-viewer');
+        const excalidrawPane = document.getElementById('excalidraw-pane');
+        const editorContainer = document.getElementById('editor-container');
+        const previewPane = document.getElementById('preview-pane');
+        const previewToggle = document.getElementById('preview-toggle');
+        if (binaryViewer) binaryViewer.classList.add('hidden');
+        if (excalidrawPane) excalidrawPane.classList.add('hidden');
+        if (this.excalidrawBridge && typeof this.excalidrawBridge.destroy === 'function') {
+            this.excalidrawBridge.destroy();
+        }
+        this.excalidrawBridge = null;
+        if (previewToggle) previewToggle.classList.remove('hidden');
+        if (editorContainer) editorContainer.classList.remove('hidden');
+        if (previewPane) previewPane.classList.toggle('hidden', !this.previewEnabled);
+        this.hideMobileSidebar();
+    }
+
+    hideMobileSidebar() {
+        const sidebar = document.getElementById('reader-sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        if (!sidebar || !overlay) return;
+        if (window.innerWidth < 768) {
+            sidebar.classList.add('-translate-x-full');
+            overlay.classList.add('hidden');
+        }
+    }
+
+    renderBinaryFile(path, kind, refresh = false) {
+        const binaryViewer = document.getElementById('binary-viewer');
+        const excalidrawPane = document.getElementById('excalidraw-pane');
+        const editorContainer = document.getElementById('editor-container');
+        const previewPane = document.getElementById('preview-pane');
+        const downloadBtn = document.getElementById('download-current-file');
+        const previewToggle = document.getElementById('preview-toggle');
+        if (!binaryViewer || !editorContainer || !previewPane) return;
+
+        const src = this.apiFileUrl(path, { refresh });
+        const title = document.getElementById('header-title');
+        const headerPath = document.getElementById('header-path');
+
+        this.currentFile = path;
+        this.currentFileKind = kind;
+        this.setDirty(false);
+
+        if (excalidrawPane) excalidrawPane.classList.add('hidden');
+        if (this.excalidrawBridge && typeof this.excalidrawBridge.destroy === 'function') {
+            this.excalidrawBridge.destroy();
+        }
+        this.excalidrawBridge = null;
+
+        editorContainer.classList.add('hidden');
+        previewPane.classList.add('hidden');
+        binaryViewer.classList.remove('hidden');
+        if (previewToggle) previewToggle.classList.add('hidden');
+
+        if (kind === 'image') {
+            binaryViewer.innerHTML = `<img src="${src}" alt="${this.escapeHtml(path)}" class="binary-image" />`;
+        } else {
+            binaryViewer.innerHTML = `
+                <div class="binary-pdf-viewer">
+                    ${this.renderPdfPreview(src, path, { direct: true })}
+                </div>
+            `;
+            this.renderPdfPreviews(binaryViewer);
+        }
+
+        if (downloadBtn) {
+            downloadBtn.classList.remove('hidden');
+            downloadBtn.onclick = () => {
+                const a = document.createElement('a');
+                a.href = src;
+                a.download = path.split('/').pop() || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            };
+        }
+
+        this.setHeaderFileInfo(path, this.fileMetadataByPath.get(path)?.mtime || null);
+        if (title) title.title = `Open ${path}`;
+        if (headerPath) headerPath.textContent = this.getDisplayFolderPath(path);
+        document.title = `${path} - ${this.appTitle}`;
+        this.updateUrlForFile(path, { replace: true });
+        this.selectFileInTrees(path);
+        this.revealFileInTree(path, 'reader-file-tree');
+        this.updateStatus(`Opened ${kind}`);
+        this.updateReaderMetadataPanel();
+        this.hideMobileSidebar();
+    }
+
+    async loadExcalidrawBridge() {
+        if (!this.excalidrawModulePromise) {
+            this.excalidrawModulePromise = import(`/excalidraw-bridge.js?v=20260530-excalidraw-fix`);
+        }
+        return this.excalidrawModulePromise;
+    }
+
+    async loadPdfJs() {
+        if (!this.pdfjsModulePromise) {
+            this.pdfjsModulePromise = import('/vendor/pdfjs/pdf.js').then(pdfjs => {
+                pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.js';
+                return pdfjs;
+            });
+        }
+        return this.pdfjsModulePromise;
+    }
+
+    async renderExcalidrawFile(path, refresh = false) {
+        const excalidrawPane = document.getElementById('excalidraw-pane');
+        const editorContainer = document.getElementById('editor-container');
+        const previewPane = document.getElementById('preview-pane');
+        const binaryViewer = document.getElementById('binary-viewer');
+        const downloadBtn = document.getElementById('download-current-file');
+        const previewToggle = document.getElementById('preview-toggle');
+        if (!excalidrawPane || !editorContainer || !previewPane) return;
+
+        const response = await this.fetchApi(`/api/file?path=${encodeURIComponent(path)}${refresh ? `&v=${Date.now()}` : ''}`);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.permissions) this.permissions = data.permissions;
+
+        this.currentFile = path;
+        this.currentFileKind = 'excalidraw';
+        this.setDirty(false);
+
+        if (binaryViewer) binaryViewer.classList.add('hidden');
+        editorContainer.classList.add('hidden');
+        previewPane.classList.add('hidden');
+        excalidrawPane.classList.remove('hidden');
+        excalidrawPane.innerHTML = '';
+        if (previewToggle) previewToggle.classList.add('hidden');
+
+        if (downloadBtn) {
+            downloadBtn.classList.remove('hidden');
+            downloadBtn.onclick = () => {
+                const a = document.createElement('a');
+                a.href = this.apiFileUrl(path);
+                a.download = path.split('/').pop() || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            };
+        }
+
+        this.setHeaderFileInfo(path, data.mtime);
+        document.title = `${path} - ${this.appTitle}`;
+        this.updateUrlForFile(path, { replace: true });
+        this.selectFileInTrees(path);
+        this.revealFileInTree(path, 'reader-file-tree');
+        this.updateReaderMetadataPanel();
+
+
+        try {
+            const bridgeModule = await this.loadExcalidrawBridge();
+            const mountToken = ++this.excalidrawMountToken;
+            if (this.excalidrawBridge && typeof this.excalidrawBridge.destroy === 'function') {
+                this.excalidrawBridge.destroy();
+            }
+            this._suppressExcalidrawDirty = true;
+            this.excalidrawBridge = bridgeModule.mountExcalidraw(excalidrawPane, {
+                content: data.content || '',
+                name: path,
+                onChange: () => {
+                    if (mountToken !== this.excalidrawMountToken) return;
+                    if (this._suppressExcalidrawDirty) return;
+                    this.setDirty(true);
+                },
+            });
+            setTimeout(() => {
+                if (mountToken === this.excalidrawMountToken) this._suppressExcalidrawDirty = false;
+            }, 300);
+        } catch (error) {
+            console.error('Failed to mount Excalidraw:', error);
+            excalidrawPane.innerHTML = `<div class="p-4 md:p-8 font-mono text-sm" style="color: var(--c-body);">Failed to load Excalidraw view. Showing raw JSON instead.</div><pre class="p-4 md:p-8 whitespace-pre-wrap break-words overflow-auto font-mono text-sm">${this.escapeHtml(data.content || '')}</pre>`;
+            this.updateStatus('Excalidraw unavailable');
+        }
+
+        this.updatePermissionControls();
+        this.updateStatus('Opened excalidraw');
+        this.hideMobileSidebar();
+    }
+
+    defaultCreateExtension(permissions = this.permissions) {
+        const formats = permissions.files_format_new || [];
+        return formats.find(ext => ext && ext !== '*') || '.md';
     }
 
     syncPreviewMode() {
@@ -103,22 +874,30 @@ class ObsidianReader {
             preview.classList.add('hidden');
             icon.textContent = 'visibility';
         }
+        this.updateReaderMetadataPanel();
     }
 
     updateUrlForFile(path, options = {}) {
-        const url = path
-            ? this.getDeepLinkUrl(path)
-            : (window.location.pathname.startsWith('/obsidian/') ? '/obsidian/' : '/');
+        const url = path ? this.getDeepLinkUrl(path) : '/home';
         const method = options.replace ? 'replaceState' : 'pushState';
         window.history[method]({}, '', url);
     }
 
+    updateUrlForSettings(options = {}) {
+        const method = options.replace ? 'replaceState' : 'pushState';
+        window.history[method]({}, '', '/settings');
+    }
+
     setupViewportHeight() {
         const setVh = () => {
-            document.documentElement.style.setProperty('--vh', `${window.innerHeight}px`);
+            const height = Math.round(window.visualViewport?.height || window.innerHeight);
+            document.documentElement.style.setProperty('--app-vh', `${height}px`);
+            this.syncHeaderDatetimeVisibility();
+            this.syncRecentDatetimeVisibility();
         };
         setVh();
         window.addEventListener('resize', setVh);
+        window.visualViewport?.addEventListener('resize', setVh);
         window.addEventListener('orientationchange', () => setTimeout(setVh, 150));
     }
 
@@ -136,7 +915,13 @@ class ObsidianReader {
                     this.loadFileTree('reader-file-tree');
                     // If the currently open file was modified externally, reload it
                     if (this.currentFile && evt.path === this.currentFile && evt.type === 'modified' && !this.isDirty) {
-                        this.loadFile(this.currentFile);
+                        if (this.currentFileKind === 'excalidraw') {
+                            // Keep the mounted Excalidraw scene stable; only refresh the tree.
+                        } else if (this.currentFileKind === 'image' || this.currentFileKind === 'pdf') {
+                            this.renderBinaryFile(this.currentFile, this.currentFileKind, true);
+                        } else {
+                            this.loadFile(this.currentFile, { preservePreview: true });
+                        }
                     }
                     // If current file was deleted, go home
                     if (this.currentFile && evt.path === this.currentFile && evt.type === 'deleted') {
@@ -151,18 +936,22 @@ class ObsidianReader {
 
     // Helper to send vault header
     async fetchApi(url, options = {}) {
+        return this.fetchApiForVault(url, this.activeVault, options);
+    }
+
+    async fetchApiForVault(url, vaultId, options = {}) {
         options.headers = Object.assign({}, options.headers || {}, {
-            'X-Vault-Path': this.activeVault
+            'X-Vault-Path': vaultId === this.ALL_VAULTS_ID ? '' : vaultId
         });
         return fetch(url, options);
     }
 
     bindEvents() {
         // Return to home via home button
-        document.getElementById('sidebar-home-btn').addEventListener('click', () => {
+        document.getElementById('sidebar-home-btn').addEventListener('click', async () => {
             document.getElementById('reader-sidebar').classList.add('-translate-x-full');
             document.getElementById('sidebar-overlay').classList.add('hidden');
-            this.switchView('home');
+            await this.switchView('home');
             this.updateUrlForFile(null);
         });
         
@@ -187,41 +976,56 @@ class ObsidianReader {
                 overlay.classList.toggle('hidden');
             }
         });
+        document.getElementById('header-new-file-btn').addEventListener('click', () => this.showNewFileModal());
+        document.getElementById('home-upload-input')?.addEventListener('change', (event) => {
+            this.handleHomeUploadFiles([...(event.target.files || [])]);
+            event.target.value = '';
+        });
+        document.getElementById('media-upload-input')?.addEventListener('change', (event) => {
+            this.handleMediaFiles(event.target.files);
+            event.target.value = '';
+        });
 
         // Config buttons
         const showConfig = async () => {
             document.getElementById('reader-sidebar').classList.add('-translate-x-full');
             document.getElementById('sidebar-overlay').classList.add('hidden');
-            this.switchView('config');
+            await this.switchView('config');
             this.populateConfigUI();
+            this.updateUrlForSettings();
         };
         document.getElementById('header-config-btn').addEventListener('click', showConfig);
-        document.getElementById('sidebar-config-btn').addEventListener('click', showConfig);
 
         document.getElementById('config-cancel-btn').addEventListener('click', () => {
             this.switchView('home');
             this.updateUrlForFile(null);
         });
-        document.getElementById('config-save-btn').addEventListener('click', () => {
-            this.saveConfig();
-            this.switchView('home');
+        document.getElementById('config-save-btn').addEventListener('click', async () => {
+            await this.saveConfig();
+            await this.switchView('home');
             this.updateUrlForFile(null);
             // Reload all content to reflect new vault
-            this.loadVaultName();
-            this.loadRecentFiles();
-            this.loadFileTree('file-tree');
+            await this.loadVaultName();
+            await Promise.all([
+                this.loadRecentFiles(),
+                this.loadFileTree('file-tree')
+            ]);
         });
 
         // Theme presets
         document.getElementById('config-theme').addEventListener('change', (e) => this.applyThemePreset(e.target.value));
-
+        document.querySelectorAll('.color-token input[type="color"]').forEach(input => {
+            input.addEventListener('input', () => this.syncPalettePreview());
+        });
         document.getElementById('sidebar-overlay').addEventListener('click', () => {
             document.getElementById('reader-sidebar').classList.add('-translate-x-full');
             document.getElementById('sidebar-overlay').classList.add('hidden');
         });
 
+        const readingArea = document.getElementById('reading-area');
+
         // Click on reading area to hide sidebar
-        document.getElementById('reading-area').addEventListener('click', () => {
+        readingArea.addEventListener('click', () => {
             const sidebar = document.getElementById('reader-sidebar');
             if (!sidebar.classList.contains('-translate-x-full')) {
                 sidebar.classList.add('-translate-x-full');
@@ -231,14 +1035,23 @@ class ObsidianReader {
 
         // Search in Home
         document.getElementById('home-search').addEventListener('input', (e) => {
-            this.filterFiles(e.target.value, 'recent-files-grid');
-            this.filterFiles(e.target.value, 'file-tree');
+            this.applyHomeSearch(e.target.value);
         });
         
         // Search in Sidebar
         document.getElementById('sidebar-search').addEventListener('input', (e) => {
             this.filterFiles(e.target.value, 'reader-file-tree');
         });
+
+        document.getElementById('toggle-file-tree').addEventListener('click', () => {
+            this.toggleAllFolders('file-tree');
+        });
+        document.getElementById('sidebar-folder-toggle').addEventListener('click', () => {
+            this.toggleAllFolders('reader-file-tree');
+        });
+
+        document.getElementById('recent-limit-dec').addEventListener('click', () => this.setRecentLimit(this.homeRecentLimit - 1));
+        document.getElementById('recent-limit-inc').addEventListener('click', () => this.setRecentLimit(this.homeRecentLimit + 1));
 
         // New file
         document.getElementById('nav-new-file').addEventListener('click', () => this.showNewFileModal());
@@ -260,32 +1073,58 @@ class ObsidianReader {
         // Context Menu
         document.addEventListener('click', () => {
             document.getElementById('context-menu').classList.add('hidden');
+            document.getElementById('reader-context-menu').classList.add('hidden');
         });
+        this.bindReaderContextMenu(readingArea);
         document.getElementById('cm-open').addEventListener('click', () => {
             if (this.contextMenuPath) {
-                this.switchView('reader');
-                this.loadFile(this.contextMenuPath);
+                this.openFile(this.contextMenuPath, this.contextMenuVault ? { vault: this.contextMenuVault } : {});
             }
         });
-        document.getElementById('cm-rename').addEventListener('click', () => {
-            if (this.contextMenuPath) {
+        document.getElementById('cm-download').addEventListener('click', () => {
+            if (this.contextMenuPath && !this.contextMenuIsDir) {
+                this.downloadPath(this.contextMenuPath, false, this.contextMenuVault || this.activeVault);
+            }
+        });
+        document.getElementById('cm-rename').addEventListener('click', async () => {
+            const perms = this.permissionsForContextMenu();
+            const canRename = this.contextMenuPath && !!perms.rename && this.matchesAllowedFormat(this.contextMenuPath, perms.files_format_read || []);
+            if (canRename) {
+                if (this.contextMenuVault && this.contextMenuVault !== this.activeVault) {
+                    this.setActiveVault(this.contextMenuVault);
+                    await this.loadServerConfig();
+                    await this.loadVaultName();
+                }
                 this.currentFile = this.contextMenuPath;
                 this.showRenameModal();
             }
         });
-        document.getElementById('cm-new-here').addEventListener('click', () => {
-            if (this.contextMenuPath) {
+        document.getElementById('cm-new-here').addEventListener('click', async () => {
+            const perms = this.permissionsForContextMenu();
+            if (this.contextMenuPath && perms.new_files) {
+                if (this.contextMenuVault && this.contextMenuVault !== this.activeVault) {
+                    this.setActiveVault(this.contextMenuVault);
+                    await this.loadServerConfig();
+                    await this.loadVaultName();
+                }
                 let folder = this.contextMenuPath;
                 // If it's a file, use its parent folder
                 if (folder.includes('.')) folder = folder.substring(0, folder.lastIndexOf('/')) || '';
                 this.showNewFileModal(folder ? folder + '/' : '');
             }
         });
-        document.getElementById('cm-delete').addEventListener('click', () => {
-            if (this.contextMenuPath && confirm(`Delete ${this.contextMenuPath}?`)) {
-                this.deleteFile(this.contextMenuPath);
+        document.getElementById('cm-delete').addEventListener('click', async () => {
+            const perms = this.permissionsForContextMenu();
+            if (this.contextMenuPath && perms.delete && confirm(`Delete ${this.contextMenuPath}?`)) {
+                await this.deleteFile(this.contextMenuPath, this.contextMenuVault || this.activeVault);
             }
         });
+        document.getElementById('reader-cm-toggle-view').addEventListener('click', () => {
+            if (this.viewMode === 'reader' && this.getViewerKind(this.currentFile) === 'text') this.togglePreview();
+        });
+        document.getElementById('reader-cm-font-inc').addEventListener('click', () => this.adjustReaderFontSize(1));
+        document.getElementById('reader-cm-font-dec').addEventListener('click', () => this.adjustReaderFontSize(-1));
+        document.getElementById('reader-cm-attach-media').addEventListener('click', () => this.openMediaPicker());
         
         // Editor
         const editor = document.getElementById('editor');
@@ -295,6 +1134,13 @@ class ObsidianReader {
             this.setDirty(true);
             this.updateHighlighting();
             if (this.previewEnabled) this.updatePreview();
+        });
+        editor.addEventListener('paste', (event) => {
+            const files = [...(event.clipboardData?.files || [])]
+                .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
+            if (!files.length) return;
+            event.preventDefault();
+            this.handleMediaFiles(files);
         });
         
         editor.addEventListener('scroll', () => {
@@ -314,6 +1160,112 @@ class ObsidianReader {
                 this.saveFile();
             }
         });
+
+        window.addEventListener('popstate', async () => {
+            await this.openRoute(this.getDeepLink(), { replaceUrl: true });
+        });
+    }
+
+    bindReaderContextMenu(readingArea) {
+        if (!readingArea) return;
+
+        const mediaFilesFromEvent = (event) => Array.from(event.dataTransfer?.files || [])
+            .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
+
+        const showAt = (x, y) => {
+            if (this.viewMode !== 'reader' || !this.currentFile || this.getViewerKind(this.currentFile) !== 'text') return;
+            this.showReaderContextMenu(x, y);
+        };
+
+        readingArea.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            showAt(event.pageX, event.pageY);
+        });
+
+        let longPressTimer = null;
+        readingArea.addEventListener('touchstart', (event) => {
+            clearTimeout(longPressTimer);
+            longPressTimer = setTimeout(() => {
+                const touch = event.touches[0];
+                if (!touch) return;
+                event.preventDefault();
+                showAt(touch.pageX, touch.pageY);
+            }, 550);
+        }, { passive: false });
+        readingArea.addEventListener('touchend', () => clearTimeout(longPressTimer));
+        readingArea.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+        readingArea.addEventListener('touchcancel', () => clearTimeout(longPressTimer));
+
+        readingArea.addEventListener('dragover', (event) => {
+            const hasMedia = Array.from(event.dataTransfer?.items || [])
+                .some(item => item.kind === 'file' && (item.type.startsWith('image/') || item.type === 'application/pdf'));
+            if (!hasMedia) return;
+            event.preventDefault();
+            if (this.canAttachMedia()) readingArea.classList.add('media-drop-active');
+        });
+        readingArea.addEventListener('dragleave', (event) => {
+            if (event.currentTarget.contains(event.relatedTarget)) return;
+            readingArea.classList.remove('media-drop-active');
+        });
+        readingArea.addEventListener('drop', (event) => {
+            const files = mediaFilesFromEvent(event);
+            if (!files.length) return;
+            event.preventDefault();
+            readingArea.classList.remove('media-drop-active');
+            this.handleMediaFiles(files);
+        });
+    }
+
+    showReaderContextMenu(x, y) {
+        const menu = document.getElementById('reader-context-menu');
+        if (!menu) return;
+
+        document.getElementById('context-menu')?.classList.add('hidden');
+
+        const toggleBtn = document.getElementById('reader-cm-toggle-view');
+        const toggleIcon = toggleBtn?.querySelector('.material-symbols-outlined');
+        if (toggleBtn) {
+            const label = toggleBtn.querySelector('[data-reader-toggle-label]');
+            if (label) label.textContent = this.previewEnabled ? 'Switch To Edit' : 'Switch To View';
+            if (toggleIcon) toggleIcon.textContent = this.previewEnabled ? 'edit_note' : 'visibility';
+        }
+
+        const attachBtn = document.getElementById('reader-cm-attach-media');
+        const canAttach = this.canAttachMedia();
+        if (attachBtn) {
+            attachBtn.classList.toggle('hidden', !canAttach);
+            attachBtn.disabled = !canAttach;
+        }
+
+        menu.classList.remove('hidden');
+        const width = menu.offsetWidth || 190;
+        const height = menu.offsetHeight || 160;
+        const left = Math.min(x, window.scrollX + window.innerWidth - width - 8);
+        const top = Math.min(y, window.scrollY + window.innerHeight - height - 8);
+        menu.style.left = `${Math.max(8, left)}px`;
+        menu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    adjustReaderFontSize(direction) {
+        const sizes = ['10px', '12px', '14px', '16px', '18px'];
+        const current = this.themeConfig.size || getComputedStyle(document.documentElement).getPropertyValue('--text-size').trim() || '14px';
+        let index = sizes.indexOf(current);
+        if (index === -1) {
+            const numeric = parseFloat(current) || 14;
+            index = sizes.reduce((best, size, i) => (
+                Math.abs(parseFloat(size) - numeric) < Math.abs(parseFloat(sizes[best]) - numeric) ? i : best
+            ), 2);
+        }
+        const nextIndex = Math.max(0, Math.min(sizes.length - 1, index + direction));
+        const nextSize = sizes[nextIndex];
+        this.themeConfig = { ...this.themeConfig, size: nextSize };
+        localStorage.setItem('mdvr_config', JSON.stringify(this.themeConfig));
+        localStorage.setItem('owr_config', JSON.stringify(this.themeConfig));
+        const sizeSelect = document.getElementById('config-size');
+        if (sizeSelect) sizeSelect.value = nextSize;
+        this.applyConfig();
+        this.updateStatus(`Font ${nextSize}`);
     }
 
     setupResize() {
@@ -370,29 +1322,37 @@ class ObsidianReader {
         const menuBtn = document.getElementById('header-menu-btn');
         const previewBtn = document.getElementById('preview-toggle');
         const configBtn = document.getElementById('header-config-btn');
+        const headerNewBtn = document.getElementById('header-new-file-btn');
         
         if (view === 'reader') {
             menuBtn.classList.remove('hidden');
             previewBtn.classList.remove('hidden');
             configBtn.classList.add('hidden');
-            document.getElementById('header-datetime').classList.remove('hidden');
+            if (headerNewBtn) headerNewBtn.classList.add('hidden');
+            this.clearDownloadButton();
+            this.syncHeaderDatetimeVisibility();
             await this.loadFileTree('reader-file-tree');
+            this.hideMobileSidebar();
         } else {
             menuBtn.classList.add('hidden');
             previewBtn.classList.add('hidden');
-            document.getElementById('header-datetime').classList.add('hidden');
+            if (headerNewBtn) headerNewBtn.classList.add('hidden');
+            this.syncHeaderDatetimeVisibility();
+            this.clearDownloadButton();
+            this.setHomeHeader();
+            document.title = this.appTitle;
             if (view === 'home') {
                 configBtn.classList.remove('hidden');
+                await this.loadVaultName();
+                this.updatePermissionControls();
                 await Promise.all([
                     this.loadRecentFiles(),
                     this.loadFileTree('file-tree')
                 ]);
+                this.setHomeUploadButton();
             } else if (view === 'config') {
                 configBtn.classList.add('hidden');
             }
-            document.getElementById('header-title').textContent = `${this.appTitle} - ${this.vaultName || 'Vault'}`;
-            document.getElementById('header-title').title = this.appTitle;
-            document.title = this.appTitle;
         }
     }
 
@@ -402,77 +1362,379 @@ class ObsidianReader {
             const data = await res.json();
             const select = document.getElementById('config-vault');
             select.innerHTML = '';
-            data.vaults.forEach(v => {
+            const configuredOptions = (data.vaults || []).map(v => {
+                if (typeof v === 'string') {
+                    const id = this.normalizeVaultId(v);
+                    return {
+                        id,
+                        name: this.vaultAliases[id] || (id === '/' ? 'Root (Vault)' : id),
+                        originalName: id === '/' ? 'Root (Vault)' : id,
+                        description: '',
+                        path: '',
+                        source: 'local',
+                        mode: '',
+                        available: true,
+                    };
+                }
+                const id = this.normalizeVaultId(v.id);
+                return {
+                    id,
+                    name: this.vaultAliases[id] || v.name || id,
+                    originalName: v.name || id,
+                    description: v.description || '',
+                    path: v.path || '',
+                    source: v.source || 'configured',
+                    mode: v.mode || '',
+                    available: v.available !== false,
+                };
+            });
+            this.vaultOptions = configuredOptions;
+            this.normalizeSelectedVaults();
+            const fallback = this.vaultOptions.find(v => v.available) || this.vaultOptions[0];
+            const activeOption = this.vaultOptions.find(v => v.id === this.activeVault);
+            if (fallback && (!activeOption || activeOption.available === false)) {
+                const previous = this.activeVault;
+                this.activeVault = fallback.id;
+                localStorage.setItem('mdvr_vault', this.activeVault);
+                localStorage.setItem('owr_vault', this.activeVault);
+                this.showVaultFallback(previous, fallback);
+            }
+            this.normalizeSelectedVaults();
+            this.vaultOptions.forEach(v => {
                 const opt = document.createElement('option');
-                opt.value = v;
-                opt.textContent = v === '/' ? 'Root (Vault)' : v;
+                opt.value = v.id;
+                opt.textContent = this.vaultLabel(v.id);
+                if (v.description) opt.title = v.description;
+                opt.disabled = !v.available;
                 select.appendChild(opt);
             });
-        } catch(e) {}
+            this.renderVaultOptions();
+        } catch(e) {
+            console.error('Failed to load vaults:', e);
+        }
+    }
+
+    showVaultFallback(previous, fallback) {
+        const note = document.getElementById('config-vault-fallback');
+        if (!note || !previous) return;
+        note.textContent = `Saved vault "${previous}" is unavailable. Falling back to "${fallback.name}".`;
+        note.classList.remove('hidden');
+    }
+
+    renderVaultOptions() {
+        const container = document.getElementById('config-vault-options');
+        const select = document.getElementById('config-vault');
+        if (!container || !select) return;
+        container.innerHTML = '';
+        select.value = this.activeVault;
+        this.getReadableVaultOptions().forEach(option => {
+            const label = document.createElement('label');
+            label.className = 'vault-option';
+            label.dataset.available = String(option.available);
+            label.title = option.description || option.path || option.name;
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.name = 'mdvr-vault';
+            checkbox.value = option.id;
+            checkbox.checked = this.selectedVaultIds.includes(option.id);
+            checkbox.disabled = !option.available;
+            checkbox.addEventListener('change', () => {
+                if (checkbox.disabled) return;
+                const checked = [...container.querySelectorAll('input[name="mdvr-vault"]:checked')].map(input => input.value);
+                if (!checked.length) {
+                    checkbox.checked = true;
+                    return;
+                }
+                this.selectedVaultIds = checked;
+                if (!this.selectedVaultIds.includes(this.activeVault)) {
+                    this.activeVault = this.selectedVaultIds[0];
+                    select.value = this.activeVault;
+                }
+                const note = document.getElementById('config-vault-fallback');
+                if (note) note.classList.add('hidden');
+            });
+
+            const body = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = this.vaultLabel(option.id);
+            const desc = document.createElement('p');
+            desc.textContent = option.description || (option.source === 'local' ? 'Local vault folder' : 'Configured vault');
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.className = 'vault-name-input';
+            nameInput.value = this.vaultAliases[option.id] || '';
+            nameInput.placeholder = option.originalName || option.name || option.id;
+            nameInput.setAttribute('aria-label', `Display name for ${option.id}`);
+            nameInput.addEventListener('click', event => event.stopPropagation());
+            nameInput.addEventListener('input', () => {
+                const value = nameInput.value.trim();
+                if (value) this.vaultAliases[option.id] = value;
+                else delete this.vaultAliases[option.id];
+                title.textContent = this.vaultLabel(option.id);
+            });
+            const path = document.createElement('code');
+            path.textContent = option.path || option.id;
+            body.append(title, desc, nameInput, path);
+
+            const meta = document.createElement('div');
+            meta.className = 'flex flex-col items-end gap-1';
+            const source = document.createElement('span');
+            source.className = 'vault-source';
+            source.textContent = option.source || 'configured';
+            const status = document.createElement('span');
+            status.className = `vault-status ${option.available ? 'is-ok' : 'is-missing'}`;
+            status.textContent = option.available ? (option.mode || 'ready') : 'missing';
+            meta.append(source, status);
+
+            label.append(checkbox, body, meta);
+            container.appendChild(label);
+        });
+    }
+
+    async loadServerConfig() {
+        if (!this.activeVault || this.activeVault === this.ALL_VAULTS_ID) {
+            this.permissions = this.allVaultPermissions();
+            this.updatePermissionControls();
+            return;
+        }
+        try {
+            const response = await this.fetchApi('/api/config');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.app && data.app.name) this.appTitle = `${data.app.name} - md_vault_reader`;
+            if (data.permissions) this.permissions = data.permissions;
+            this.updatePermissionControls();
+        } catch (error) {
+            console.error('Failed to load server config:', error);
+            this.updatePermissionControls();
+        }
+    }
+
+    updatePermissionControls() {
+        const menuPermissions = this.permissionsForContextMenu();
+        const openBtn = document.getElementById('cm-open');
+        if (openBtn) {
+            const canOpen = !this.contextMenuIsDir;
+            openBtn.classList.toggle('hidden', !canOpen);
+            openBtn.disabled = !canOpen;
+        }
+
+        const downloadBtn = document.getElementById('cm-download');
+        if (downloadBtn) {
+            const canDownload = !this.contextMenuIsDir;
+            downloadBtn.classList.toggle('hidden', !canDownload);
+            downloadBtn.disabled = !canDownload;
+        }
+
+        const homeTarget = this.getHomeCreateTarget();
+        const navNewBtn = document.getElementById('nav-new-file');
+        if (navNewBtn) {
+            const canCreateFromHome = this.viewMode === 'home' ? !!homeTarget : !!this.permissions.new_files;
+            navNewBtn.classList.toggle('hidden', !canCreateFromHome);
+            navNewBtn.disabled = !canCreateFromHome;
+        }
+        const headerNewBtn = document.getElementById('header-new-file-btn');
+        if (headerNewBtn) {
+            const canCreateFromHeader = this.viewMode === 'home' && !!homeTarget;
+            headerNewBtn.classList.toggle('hidden', !canCreateFromHeader);
+            headerNewBtn.disabled = !canCreateFromHeader;
+            headerNewBtn.title = homeTarget ? `New file in ${this.vaultLabel(homeTarget.vault.id)}` : 'New file';
+        }
+        const sidebarNewBtn = document.getElementById('sidebar-new-file');
+        if (sidebarNewBtn) {
+            sidebarNewBtn.classList.toggle('hidden', !this.permissions.new_files);
+            sidebarNewBtn.disabled = !this.permissions.new_files;
+        }
+        const newHereBtn = document.getElementById('cm-new-here');
+        if (newHereBtn) {
+            const canCreateHere = !!menuPermissions.new_files && !!this.contextMenuPath;
+            newHereBtn.classList.toggle('hidden', !canCreateHere);
+            newHereBtn.disabled = !canCreateHere;
+        }
+
+
+        const renameButtons = [document.getElementById('cm-rename')];
+        renameButtons.forEach(btn => {
+            if (!btn) return;
+            const allowed = this.contextMenuPath
+                ? !!menuPermissions.rename && this.matchesAllowedFormat(this.contextMenuPath, menuPermissions.files_format_read || [])
+                : !!this.permissions.rename;
+            btn.classList.toggle('hidden', !allowed);
+            btn.disabled = !allowed;
+        });
+
+        const deleteBtn = document.getElementById('cm-delete');
+        const deleteDivider = document.getElementById('cm-delete-divider');
+        if (deleteBtn) {
+            const canDelete = !!menuPermissions.delete && !!this.contextMenuPath;
+            deleteBtn.classList.toggle('hidden', !canDelete);
+            deleteBtn.disabled = !canDelete;
+        }
+        if (deleteDivider) deleteDivider.classList.toggle('hidden', !menuPermissions.delete);
+
+        const editor = document.getElementById('editor');
+        if (editor) {
+            const canEdit = this.currentFile ? this.canEditPath(this.currentFile) : false;
+            editor.readOnly = !canEdit;
+        }
+        if (this.viewMode === 'home') this.setHomeUploadButton();
     }
 
     async loadVaultName() {
+        if (this.isAllVaults()) {
+            const names = this.getSelectedVaultOptions().map(option => this.vaultLabel(option.id));
+            this.vaultName = names.length ? names.join(' + ') : 'Selected vaults';
+            if (this.viewMode !== 'reader') this.setHomeHeader();
+            this.syncHomeTelemetry();
+            return;
+        }
         try {
-            const response = await this.fetchApi('/api/vault-name');
-            const data = await response.json();
-            this.vaultName = data.name;
-            document.getElementById('header-title').textContent = `${this.appTitle} - ${this.vaultName}`;
-            document.getElementById('header-title').title = this.appTitle;
+            await this.loadActiveVaultName();
         } catch (error) {
             console.error('Failed to load vault name:', error);
             this.vaultName = 'Obsidian Vault';
+            this.syncHomeTelemetry();
         }
+    }
+
+    async loadActiveVaultName() {
+        try {
+            const response = await this.fetchApi('/api/vault-name');
+            const data = await response.json();
+            this.vaultName = this.vaultLabel(this.activeVault) || data.name;
+            if (this.viewMode !== 'reader') this.setHomeHeader();
+            this.syncHomeTelemetry();
+        } catch (error) {
+            console.error('Failed to load active vault name:', error);
+            throw error;
+        }
+    }
+
+    countVisibleFiles(files) {
+        return (files || []).reduce((total, file) => {
+            if (file.is_dir) return total + this.countVisibleFiles(file.children || []);
+            return total + (this.isVisibleFile(file.path) ? 1 : 0);
+        }, 0);
+    }
+
+    syncHomeTelemetry() {
+        const fileCount = String(this.homeFileCount).padStart(3, '0');
+        const recentCount = String(this.homeRecentCount).padStart(2, '0');
+        const treeCount = document.getElementById('home-tree-count');
+        const recent = document.getElementById('home-recent-count');
+        const recentDec = document.getElementById('recent-limit-dec');
+        const recentInc = document.getElementById('recent-limit-inc');
+        if (treeCount) treeCount.textContent = `${fileCount} OBJECTS`;
+        if (recent) recent.textContent = `${recentCount} ACTIVE`;
+        if (recentDec) recentDec.disabled = this.homeRecentLimit <= 1;
+        if (recentInc) recentInc.disabled = this.homeRecentLimit >= Math.min(12, Math.max(1, this.homeRecentTotal));
+    }
+
+    setRecentLimit(limit) {
+        const nextLimit = Math.min(12, Math.max(1, limit));
+        if (nextLimit === this.homeRecentLimit) return;
+        this.homeRecentLimit = nextLimit;
+        localStorage.setItem('mdvr_recent_limit', String(nextLimit));
+        this.loadRecentFiles();
     }
 
     async loadRecentFiles() {
         try {
-            const response = await this.fetchApi('/api/recent');
-            const data = await response.json();
+            let files = [];
+            const selectedVaults = this.getSelectedVaultOptions();
+            if (selectedVaults.length > 1) {
+                await this.loadSelectedVaultPermissions();
+                const settled = await Promise.allSettled(
+                    selectedVaults.map(async vault => {
+                        const data = await this.fetchJsonForVault(vault.id, '/api/recent');
+                        return (data.files || []).map(file => ({
+                            ...file,
+                            vault: vault.id,
+                            vaultName: this.vaultLabel(vault.id),
+                        }));
+                    })
+                );
+                files = settled.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+                this.permissions = this.allVaultPermissions();
+                this.updatePermissionControls();
+            } else {
+                const vault = selectedVaults[0];
+                if (vault && vault.id !== this.activeVault && this.viewMode === 'home') {
+                    this.setActiveVault(vault.id);
+                    await this.loadServerConfig();
+                    await this.loadVaultName();
+                }
+                const response = vault
+                    ? await this.fetchApiForVault('/api/recent', vault.id)
+                    : await this.fetchApi('/api/recent');
+                const data = await response.json();
+                if (data.permissions) {
+                    this.permissions = data.permissions;
+                    this.updatePermissionControls();
+                }
+                files = (data.files || []).map(file => ({
+                    ...file,
+                    vault: vault?.id || this.activeVault,
+                    vaultName: vault ? this.vaultLabel(vault.id) : this.vaultName || this.activeVault,
+                }));
+            }
+            if (selectedVaults.length <= 1 && this.permissions) {
+                this.updatePermissionControls();
+            }
+            if (selectedVaults.length > 1) {
+                files.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+            }
             const grid = document.getElementById('recent-files-grid');
             grid.innerHTML = '';
+            const visibleRecentFiles = files
+                .filter(file => this.isVisibleFile(file.path));
+            this.homeRecentTotal = visibleRecentFiles.length;
+            const recentFiles = visibleRecentFiles.slice(0, this.homeRecentLimit);
+            this.homeRecentCount = recentFiles.length;
+            this.syncHomeTelemetry();
 
-            data.files
-                .filter(file => this.isVisibleFile(file.path))
-                .slice(0, 5)
-                .forEach(file => {
-                const date = new Date(file.mtime * 1000);
-                const dateStr = date.toISOString().split('T')[0];
-                const timeStr = date.toTimeString().split(' ')[0].substring(0, 5);
-                const title = file.name.replace(/\.(md|canvas)$/i, '');
-                
-                const folderPath = file.path.substring(0, file.path.lastIndexOf('/'));
+            recentFiles.forEach(file => {
+                const timestamp = this.formatHeaderDateTime(file.mtime);
+                const title = file.name.replace(/\.(md|markdown|excalidraw)$/i, '');
+                const folderPath = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
+                const vaultPrefix = file.vaultName || this.vaultLabel(file.vault);
+                const displayFolderPath = selectedVaults.length > 1
+                    ? `${vaultPrefix}${folderPath === '/' ? ' /' : ` / ${folderPath}`}`
+                    : folderPath;
 
                 const card = document.createElement('div');
-                card.className = 'border border-outline-variant p-3 hover:opacity-90 transition-colors cursor-pointer file-card shadow-sm rounded-sm mechanical-button h-28 flex flex-col';
+                card.className = 'border border-outline-variant p-4 hover:opacity-90 transition-colors cursor-pointer file-card shadow-sm mechanical-button h-36 flex flex-col';
                 card.style.backgroundColor = 'var(--c-sidebar)';
-                card.dataset.path = file.path;
+                card.dataset.path = selectedVaults.length > 1 ? `${file.vault}/${file.path}` : file.path;
+                card.dataset.openPath = file.path;
+                card.dataset.vault = file.vault || this.activeVault;
+                card.dataset.tags = (file.tags || []).map(tag => this.formatTagQuery(tag)).join(' ');
                 
                 const inner = document.createElement('div');
                 inner.className = 'flex-grow flex flex-col overflow-hidden';
                 
-                // Row 1: Title (left) + Timestamp (right)
+                // Title and path stay left; date and time use a fixed narrow column.
                 const topRow = document.createElement('div');
-                topRow.className = 'flex items-center justify-between gap-2 mb-1';
+                topRow.className = 'file-card-header mb-1';
+                const primary = document.createElement('div');
+                primary.className = 'file-card-primary';
                 const h3 = document.createElement('h3');
                 h3.className = 'font-mono-value font-bold text-sm truncate';
                 h3.style.color = 'var(--c-body)';
                 h3.textContent = title;
-                const ts = document.createElement('span');
-                ts.className = 'font-mono-label text-[9px] flex-shrink-0 opacity-50';
-                ts.style.color = 'var(--c-body)';
-                ts.textContent = `${dateStr} ${timeStr}`;
-                topRow.appendChild(h3);
-                topRow.appendChild(ts);
+                const fp = document.createElement('div');
+                fp.className = 'file-card-path';
+                fp.textContent = displayFolderPath;
+                primary.appendChild(h3);
+                primary.appendChild(fp);
+                const datetime = document.createElement('div');
+                datetime.className = 'file-card-datetime';
+                datetime.style.color = 'var(--c-body)';
+                datetime.innerHTML = `<span>${timestamp.date}</span><span>${timestamp.time}</span>`;
+                topRow.appendChild(primary);
+                topRow.appendChild(datetime);
                 inner.appendChild(topRow);
-                
-                // Row 2: Path
-                if (folderPath) {
-                    const fp = document.createElement('div');
-                    fp.className = 'font-mono-label text-[9px] uppercase mb-1 truncate';
-                    fp.style.color = 'var(--c-accent)';
-                    fp.textContent = folderPath;
-                    inner.appendChild(fp);
-                }
                 
                 // Row 3: Excerpt
                 const p = document.createElement('p');
@@ -482,23 +1744,143 @@ class ObsidianReader {
                 inner.appendChild(p);
                 
                 card.appendChild(inner);
-                card.addEventListener('click', () => {
-                    this.switchView('reader');
-                    this.loadFile(file.path);
-                });
+                card.addEventListener('click', () => this.openFile(file.path, { vault: card.dataset.vault }));
                 grid.appendChild(card);
             });
+            requestAnimationFrame(() => this.syncRecentDatetimeVisibility());
         } catch (error) {
             console.error('Failed to load recent files:', error);
             this.updateStatus('Failed to load recent files');
         }
     }
 
+    syncRecentDatetimeVisibility() {
+        document.querySelectorAll('.file-card').forEach(card => {
+            const datetime = card.querySelector('.file-card-datetime');
+            if (!datetime) return;
+            datetime.classList.remove('hidden');
+            datetime.classList.toggle('hidden', datetime.scrollWidth > card.clientWidth * 0.4);
+        });
+    }
+
+    syncFolderToggle(containerId = 'file-tree') {
+        const container = document.getElementById(containerId);
+        const toggle = document.getElementById(containerId === 'reader-file-tree' ? 'sidebar-folder-toggle' : 'toggle-file-tree');
+        if (!container || !toggle) return;
+        const folders = [...container.querySelectorAll('.file-item.folder')]
+            .filter(folder => folder.nextElementSibling?.classList.contains('folder-children'));
+        const allExpanded = folders.length > 0 && folders.every(folder => this.expandedFolders.has(folder.dataset.path));
+        toggle.setAttribute('aria-pressed', String(allExpanded));
+        toggle.title = allExpanded ? 'Collapse folders' : 'Expand folders';
+        toggle.setAttribute('aria-label', toggle.title);
+        if (containerId === 'reader-file-tree') {
+            toggle.innerHTML = allExpanded
+                ? '<span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">unfold_less</span>'
+                : '<span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">unfold_more</span>';
+        } else {
+            toggle.innerHTML = allExpanded
+                ? '<span class="material-symbols-outlined text-[14px]">unfold_less</span> COLLAPSE_FOLDERS'
+                : '<span class="material-symbols-outlined text-[14px]">unfold_more</span> EXPAND_FOLDERS';
+        }
+    }
+
+    toggleAllFolders(containerId = 'file-tree') {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        const folders = [...container.querySelectorAll('.file-item.folder')]
+            .filter(folder => folder.nextElementSibling?.classList.contains('folder-children'));
+        const shouldExpand = folders.some(folder => !this.expandedFolders.has(folder.dataset.path));
+        folders.forEach(folder => {
+            const children = folder.nextElementSibling;
+            children.classList.toggle('hidden', !shouldExpand);
+            this.expandedFolders[shouldExpand ? 'add' : 'delete'](folder.dataset.path);
+            const icon = folder.querySelector('.folder-icon');
+            if (icon) icon.textContent = shouldExpand ? '▼' : '▶';
+        });
+        this.syncFolderToggle(containerId);
+    }
+
+    getAncestorFolderPaths(path) {
+        const parts = String(path || '').split('/').filter(Boolean);
+        parts.pop();
+        return parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+    }
+
+    selectFileInTrees(path) {
+        document.querySelectorAll('.file-item').forEach(item => item.classList.remove('selected'));
+        document.querySelectorAll(`.file-item[data-path="${CSS.escape(path)}"]`).forEach(el => el.classList.add('selected'));
+        document.querySelectorAll(`.file-item[data-open-path="${CSS.escape(path)}"]`).forEach(el => el.classList.add('selected'));
+    }
+
+    revealFileInTree(path, containerId = 'reader-file-tree') {
+        const container = document.getElementById(containerId);
+        if (!container || !path) return;
+
+        const ancestors = this.getAncestorFolderPaths(path);
+        ancestors.forEach(folderPath => this.expandedFolders.add(folderPath));
+
+        ancestors.forEach(folderPath => {
+            const folder = container.querySelector(`.file-item.folder[data-path="${CSS.escape(folderPath)}"]`);
+            if (!folder) return;
+            const children = folder.nextElementSibling;
+            if (children && children.classList.contains('folder-children')) {
+                children.classList.remove('hidden');
+                children.style.display = '';
+            }
+            const icon = folder.querySelector('.folder-icon');
+            if (icon) icon.textContent = '▼';
+            folder.style.display = '';
+        });
+
+        this.selectFileInTrees(path);
+        const target = container.querySelector(`.file-item.file[data-path="${CSS.escape(path)}"]`);
+        if (!target) return;
+        target.style.display = '';
+        requestAnimationFrame(() => {
+            target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+        });
+        this.syncFolderToggle(containerId);
+    }
+
     async loadFileTree(containerId) {
         try {
-            const response = await this.fetchApi('/api/files');
-            const data = await response.json();
-            this.renderFileTree(data.files, document.getElementById(containerId));
+            let files = [];
+            const selectedVaults = this.getSelectedVaultOptions();
+            if (containerId === 'file-tree' && selectedVaults.length > 1) {
+                await this.loadSelectedVaultPermissions();
+                const settled = await Promise.allSettled(
+                    selectedVaults.map(async vault => {
+                        const data = await this.fetchJsonForVault(vault.id, '/api/files');
+                        return {
+                            vault,
+                            files: data.files || [],
+                        };
+                    })
+                );
+                const fulfilled = settled
+                    .filter(result => result.status === 'fulfilled')
+                    .map(result => result.value);
+                this.homeFileCount = fulfilled.reduce((total, entry) => total + this.countVisibleFiles(entry.files), 0);
+                files = fulfilled.map(entry => this.toVaultTreeRoot(entry.files, entry.vault));
+            } else {
+                const vault = containerId === 'file-tree' ? selectedVaults[0] : null;
+                if (vault && vault.id !== this.activeVault && this.viewMode === 'home') {
+                    this.setActiveVault(vault.id);
+                    await this.loadServerConfig();
+                    await this.loadVaultName();
+                }
+                const response = vault
+                    ? await this.fetchApiForVault('/api/files', vault.id)
+                    : await this.fetchApi('/api/files');
+                const data = await response.json();
+                files = data.files || [];
+                if (containerId === 'file-tree') this.homeFileCount = this.countVisibleFiles(files);
+            }
+            this.syncHomeTelemetry();
+            this.renderFileTree(files, document.getElementById(containerId));
+            if (containerId === 'reader-file-tree' && this.currentFile) {
+                this.revealFileInTree(this.currentFile, containerId);
+            }
         } catch (error) {
             console.error('Failed to load file tree:', error);
         }
@@ -514,10 +1896,18 @@ class ObsidianReader {
 
         sortedFiles.forEach(file => {
             if (!file.is_dir && !this.isVisibleFile(file.path)) return;
+            if (!file.is_dir) {
+                this.fileMetadataByPath.set(file.open_path || file.path, {
+                    mtime: file.mtime || null,
+                });
+            }
 
             const fileElement = document.createElement('div');
             fileElement.className = `file-item ${file.is_dir ? 'folder' : 'file'}`;
             fileElement.dataset.path = file.path;
+            fileElement.dataset.openPath = file.open_path || file.path;
+            fileElement.dataset.vault = file.vault || '';
+            fileElement.dataset.tags = (file.tags || []).map(tag => this.formatTagQuery(tag)).join(' ');
 
             const isExpanded = file.is_dir && this.expandedFolders.has(file.path);
             
@@ -540,14 +1930,15 @@ class ObsidianReader {
                 fileIcon.textContent = '─';
                 const fileName = document.createElement('span');
                 fileName.className = 'file-name truncate';
-                fileName.title = file.path;
+                fileName.title = file.open_path || file.path;
                 fileName.textContent = file.name;
                 fileElement.appendChild(fileIcon);
                 fileElement.appendChild(fileName);
-                fileElement.addEventListener('click', (e) => {
+                fileElement.addEventListener('click', async (e) => {
                     e.stopPropagation();
-                    this.switchView('reader');
-                    this.loadFile(file.path);
+                    const openPath = file.open_path || file.path;
+                    const vault = file.vault || null;
+                    await this.openFile(openPath, vault ? { vault } : {});
                     
                     const sidebar = document.getElementById('reader-sidebar');
                     if (!sidebar.classList.contains('-translate-x-full')) {
@@ -557,31 +1948,35 @@ class ObsidianReader {
                 });
             }
 
-            // Context menu — right-click (desktop) + long press (mobile)
+            // Keep the unfinished management surface dormant until it is exposed deliberately.
             const showCtx = (x, y) => {
-                this.contextMenuPath = file.path;
+                this.contextMenuPath = file.open_path || file.path;
+                this.contextMenuVault = file.vault || this.activeVault;
                 this.contextMenuIsDir = file.is_dir;
+                this.updatePermissionControls();
                 const menu = document.getElementById('context-menu');
                 menu.style.left = `${x}px`;
                 menu.style.top = `${y}px`;
                 menu.classList.remove('hidden');
             };
-            fileElement.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                showCtx(e.pageX, e.pageY);
-            });
-            // Long press for mobile
-            let lpTimer = null;
-            fileElement.addEventListener('touchstart', (e) => {
-                lpTimer = setTimeout(() => {
+            if (this.contextMenuEnabled) {
+                fileElement.addEventListener('contextmenu', (e) => {
                     e.preventDefault();
-                    const t = e.touches[0];
-                    showCtx(t.pageX, t.pageY);
-                }, 500);
-            }, { passive: false });
-            fileElement.addEventListener('touchend', () => clearTimeout(lpTimer));
-            fileElement.addEventListener('touchmove', () => clearTimeout(lpTimer));
+                    e.stopPropagation();
+                    showCtx(e.pageX, e.pageY);
+                });
+                // Long press for mobile
+                let lpTimer = null;
+                fileElement.addEventListener('touchstart', (e) => {
+                    lpTimer = setTimeout(() => {
+                        e.preventDefault();
+                        const t = e.touches[0];
+                        showCtx(t.pageX, t.pageY);
+                    }, 500);
+                }, { passive: false });
+                fileElement.addEventListener('touchend', () => clearTimeout(lpTimer));
+                fileElement.addEventListener('touchmove', () => clearTimeout(lpTimer));
+            }
 
             container.appendChild(fileElement);
 
@@ -595,8 +1990,10 @@ class ObsidianReader {
 
         // Ensure selection highlighting persists across re-renders
         if (this.currentFile) {
+            document.querySelectorAll(`.file-item[data-open-path="${CSS.escape(this.currentFile)}"]`).forEach(el => el.classList.add('selected'));
             document.querySelectorAll(`.file-item[data-path="${CSS.escape(this.currentFile)}"]`).forEach(el => el.classList.add('selected'));
         }
+        if (container.id === 'file-tree' || container.id === 'reader-file-tree') this.syncFolderToggle(container.id);
     }
 
     toggleFolder(folderElement, folderPath) {
@@ -612,26 +2009,46 @@ class ObsidianReader {
                 this.expandedFolders.delete(folderPath);
                 folderElement.querySelector('.folder-icon').textContent = '▶';
             }
+            if (folderElement.closest('#file-tree')) this.syncFolderToggle('file-tree');
+            if (folderElement.closest('#reader-file-tree')) this.syncFolderToggle('reader-file-tree');
         }
     }
 
     filterFiles(query, containerId) {
-        query = query.toLowerCase();
+        query = query.toLowerCase().trim();
+        const isTagSearch = query.startsWith('#');
         if (containerId === 'recent-files-grid') {
             const cards = document.querySelectorAll('.file-card');
             cards.forEach(card => {
                 const name = card.querySelector('h3').textContent.toLowerCase();
-                if (name.includes(query)) card.style.display = '';
+                const path = (card.dataset.path || '').toLowerCase();
+                const tags = (card.dataset.tags || '').toLowerCase();
+                if (query === '' || (isTagSearch ? tags.split(/\s+/).includes(query) : (name.includes(query) || path.includes(query) || tags.includes(query)))) card.style.display = '';
                 else card.style.display = 'none';
             });
         } else {
             const container = document.getElementById(containerId);
             if (!container) return;
             const fileItems = container.querySelectorAll('.file-item');
+            const folderMatchPrefixes = new Set();
             
             fileItems.forEach(item => {
                 const fileName = item.textContent.toLowerCase();
-                if (query === '' || fileName.includes(query)) {
+                const filePath = (item.dataset.path || '').toLowerCase();
+                const tags = (item.dataset.tags || '').toLowerCase();
+                const directMatch = query === '' || (isTagSearch ? tags.split(/\s+/).includes(query) : (fileName.includes(query) || filePath.includes(query) || tags.includes(query)));
+                if (directMatch && query !== '' && item.classList.contains('folder')) {
+                    folderMatchPrefixes.add(item.dataset.path || '');
+                }
+            });
+
+            fileItems.forEach(item => {
+                const fileName = item.textContent.toLowerCase();
+                const filePath = (item.dataset.path || '').toLowerCase();
+                const tags = (item.dataset.tags || '').toLowerCase();
+                const directMatch = query === '' || (isTagSearch ? tags.split(/\s+/).includes(query) : (fileName.includes(query) || filePath.includes(query) || tags.includes(query)));
+                const folderDescendantMatch = query !== '' && [...folderMatchPrefixes].some(prefix => prefix && item.dataset.path?.startsWith(`${prefix}/`));
+                if (directMatch || folderDescendantMatch) {
                     item.style.display = '';
                     
                     if (query !== '' && !item.querySelector('.search-path') && item.dataset.path) {
@@ -647,16 +2064,20 @@ class ObsidianReader {
                         item.querySelector('.search-path').remove();
                     }
 
-                    let parent = item.parentElement;
-                    while (parent && parent.classList.contains('folder-children')) {
-                        parent.classList.remove('hidden');
-                        parent = parent.parentElement;
-                        if (parent && parent.classList.contains('file-item')) {
-                            const icon = parent.querySelector('.folder-icon');
-                            if (icon) {
-                                icon.textContent = '▼';
-                                this.expandedFolders.add(parent.dataset.path);
+                    if (query !== '') {
+                        let branch = item.parentElement;
+                        while (branch && branch.classList.contains('folder-children')) {
+                            branch.classList.remove('hidden');
+                            branch.style.display = '';
+                            const parentFolder = branch.previousElementSibling;
+                            if (parentFolder && parentFolder.classList.contains('folder')) {
+                                parentFolder.style.display = '';
+                                const icon = parentFolder.querySelector('.folder-icon');
+                                if (icon) {
+                                    icon.textContent = '▼';
+                                }
                             }
+                            branch = parentFolder ? parentFolder.parentElement : null;
                         }
                     }
                 } else {
@@ -665,6 +2086,15 @@ class ObsidianReader {
             });
 
             container.querySelectorAll('.folder-children').forEach(cont => {
+                if (query === '') {
+                    const folder = cont.previousElementSibling;
+                    const expanded = !!folder && this.expandedFolders.has(folder.dataset.path);
+                    cont.classList.toggle('hidden', !expanded);
+                    cont.style.display = '';
+                    const icon = folder && folder.querySelector('.folder-icon');
+                    if (icon) icon.textContent = expanded ? '▼' : '▶';
+                    return;
+                }
                 const visibleItems = cont.querySelectorAll('.file-item:not([style*="display: none"])');
                 if (visibleItems.length === 0) {
                     cont.style.display = 'none';
@@ -677,6 +2107,16 @@ class ObsidianReader {
 
     async loadFile(path, options = {}) {
         if (this.isDirty) await this.saveFile();
+        const viewerKind = this.getViewerKind(path);
+        if (viewerKind === 'excalidraw') {
+            await this.renderExcalidrawFile(path, options.refreshBinary === true);
+            return;
+        }
+        if (viewerKind === 'image' || viewerKind === 'pdf') {
+            this.renderBinaryFile(path, viewerKind, options.refreshBinary === true);
+            return;
+        }
+
         if (!this.isVisibleFile(path)) {
             this.updateStatus('Unsupported file type');
             return;
@@ -689,38 +2129,40 @@ class ObsidianReader {
                 throw new Error(errorData.detail || `HTTP ${response.status}`);
             }
             const data = await response.json();
+            if (data.permissions) this.permissions = data.permissions;
+            this.currentMetadata = Array.isArray(data.metadata) ? data.metadata : [[], [], []];
+            this.currentResolvedLinks = new Map((this.currentMetadata[1] || []).map(link => [String(link.label || '').toLowerCase(), link.path || link.label || '']));
             
             document.getElementById('editor').value = data.content;
             this.currentFile = path;
-            this.previewEnabled = true;
+            this.currentFileKind = data.kind || 'text';
+            if (options.preservePreview !== true) this.previewEnabled = true;
             this.setDirty(false);
             this.updateHighlighting();
+            this.showTextViewer();
             this.syncPreviewMode();
             this.updatePreview();
+            this.updatePermissionControls();
+            this.setDownloadForPath(path);
             
             const title = document.getElementById('header-title');
-            title.textContent = path;
-            title.title = `Click to rename ${path}`;
+            if (title) title.title = `Click to rename ${path}`;
+            this.setHeaderFileInfo(path, data.mtime);
             document.title = `${path} - ${this.appTitle}`;
             this.updateUrlForFile(path, { replace: options.replaceUrl === true });
             
-            document.querySelectorAll('.file-item').forEach(item => item.classList.remove('selected'));
-            document.querySelectorAll(`.file-item[data-path="${CSS.escape(path)}"]`).forEach(el => el.classList.add('selected'));
-            
-            // Populate Header Datetime
-            const dtEl = document.getElementById('header-datetime');
-            if (data.mtime && dtEl) {
-                const date = new Date(data.mtime * 1000);
-                const dtStr = date.toISOString().split('T')[0] + ' ' + date.toTimeString().split(' ')[0].substring(0, 5);
-                dtEl.textContent = dtStr;
-            }
+            this.selectFileInTrees(path);
+            this.revealFileInTree(path, 'reader-file-tree');
+            this.syncHeaderDatetimeVisibility();
             
         } catch (error) {
             console.error('Failed to load file:', error);
             this.updateStatus('Failed to load ' + path);
             const title = document.getElementById('header-title');
-            title.textContent = path;
-            title.title = `Failed to load ${path}`;
+            if (title) {
+                title.textContent = this.getDisplayTitle(path) || path;
+                title.title = `Failed to load ${path}`;
+            }
         }
     }
 
@@ -748,8 +2190,18 @@ class ObsidianReader {
 
     async saveFile() {
         if (!this.currentFile || !this.isDirty) return;
+        if (!this.canEditPath(this.currentFile)) {
+            this.updateStatus('Edit not allowed');
+            this.setDirty(false);
+            return;
+        }
         try {
-            const content = document.getElementById('editor').value;
+            let content;
+            if (this.currentFileKind === 'excalidraw' && this.excalidrawBridge && typeof this.excalidrawBridge.serialize === 'function') {
+                content = this.excalidrawBridge.serialize();
+            } else {
+                content = document.getElementById('editor').value;
+            }
             const response = await this.fetchApi('/api/file', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -769,22 +2221,9 @@ class ObsidianReader {
 
     setDirty(dirty) {
         this.isDirty = dirty;
-        const ind = document.getElementById('save-indicator');
-        if (dirty) {
-            ind.classList.remove('hidden');
-            ind.textContent = '[MODIFIED]';
-        } else {
-            ind.textContent = '[SAVED]';
-            setTimeout(() => { if (!this.isDirty) ind.classList.add('hidden'); }, 2000);
-        }
     }
 
-    updateStatus(text) {
-        const statusElement = document.getElementById('header-status');
-        if (!statusElement) return;
-        statusElement.textContent = text;
-        setTimeout(() => { statusElement.textContent = ''; }, 3000);
-    }
+    updateStatus(_text) {}
 
     setupAutoSave() {
         setInterval(() => { if (this.isDirty) this.saveFile(); }, 30000);
@@ -807,10 +2246,47 @@ class ObsidianReader {
                 `;
                 return;
             }
-            previewPane.innerHTML = this.parseMarkdown(content);
+            const markdown = this.parseMarkdown(this.stripMetadataTagBlocks(content));
+            previewPane.innerHTML = `${markdown}${this.renderMetadataInlineFooter()}`;
+            this.bindPreviewLinkHandlers(previewPane);
+            this.renderPdfPreviews(previewPane);
         } catch (e) {
             previewPane.innerHTML = '<pre>' + this.escapeHtml(content) + '</pre>';
         }
+    }
+
+    stripMetadataTagBlocks(text) {
+        if (!text) return '';
+        const lines = text.split('\n');
+        const output = [];
+        let inCodeBlock = false;
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const stripped = line.trim();
+            if (stripped.startsWith('```')) {
+                inCodeBlock = !inCodeBlock;
+                output.push(line);
+                continue;
+            }
+            if (!inCodeBlock && /^(?:#{1,6}\s*)?tags:?$/i.test(stripped)) {
+                let next = i + 1;
+                let consumed = false;
+                while (next < lines.length && /^[-*+]\s+/.test(lines[next].trim())) {
+                    next++;
+                    consumed = true;
+                }
+                if (consumed) {
+                    i = next;
+                    if (i < lines.length && lines[i].trim() !== '') i--;
+                    continue;
+                }
+            }
+            if (!inCodeBlock && /^(?:#{1,6}\s*)?tags\s*[:\-]\s*\S+/i.test(stripped)) {
+                continue;
+            }
+            output.push(line);
+        }
+        return output.join('\n').replace(/^\s+/, '');
     }
 
     parseMarkdown(text) {
@@ -835,6 +2311,20 @@ class ObsidianReader {
                 continue;
             }
             if (inCodeBlock) { output.push(this.escapeHtml(line)); continue; }
+
+            const mediaOnly = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+            if (mediaOnly) {
+                if (inList) { output.push(`</${listType}>`); inList = false; }
+                output.push(this.renderMediaEmbed(mediaOnly[2], mediaOnly[1]));
+                continue;
+            }
+
+            const pdfOnly = line.trim().match(/^\[([^\]]+)\]\(([^)]+\.pdf(?:#[^)]+)?)\)$/i);
+            if (pdfOnly) {
+                if (inList) { output.push(`</${listType}>`); inList = false; }
+                output.push(this.renderMediaEmbed(pdfOnly[2], pdfOnly[1]));
+                continue;
+            }
 
             const headerMatch = line.match(/^(#{1,6})\s+(.*)/);
             if (headerMatch) {
@@ -885,12 +2375,231 @@ class ObsidianReader {
         text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         text = text.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
         text = text.replace(/_([^_]+?)_/g, '<em>$1</em>');
+        text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, label, href) => this.renderMediaEmbed(href, label));
+        text = text.replace(/\[\[([^\]]+)\]\]/g, (match, raw) => {
+            const target = raw.split('|', 1)[0].split('#', 1)[0].trim();
+            const label = raw.includes('|') ? raw.split('|').slice(1).join('|').trim() : target;
+            const resolved = this.currentResolvedLinks.get(target.toLowerCase()) || target;
+            return `<a href="#" class="wiki-link" data-wiki-path="${this.escapeHtml(resolved)}">${this.escapeHtml(label)}</a>`;
+        });
         text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, href) => {
             const safeHref = href.replace(/["'<>]/g, '');
             if (safeHref.startsWith('javascript:')) return this.escapeHtml(match);
+            if (safeHref.toLowerCase().split('#', 1)[0].endsWith('.pdf')) return this.renderMediaEmbed(safeHref, label);
             return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
         });
+        text = text.replace(/(^|[\s(])#([A-Za-z0-9][A-Za-z0-9_/-]*)\b/g, (match, prefix, tag) => {
+            const query = this.formatTagQuery(tag);
+            return `${prefix}<button type="button" class="wiki-link tag-inline-link" data-tag-query="${this.escapeHtml(query)}">${this.escapeHtml(query)}</button>`;
+        });
         return text;
+    }
+
+    resolveAssetPath(href) {
+        const raw = String(href || '').trim().replace(/^<|>$/g, '');
+        if (!raw || /^(?:https?:|data:|blob:|mailto:|#)/i.test(raw)) return { external: true, href: raw };
+        const [pathPart, hash = ''] = raw.split('#', 2);
+        let normalized = pathPart.replace(/\\/g, '/').replace(/^\/+/, '');
+        const currentFolder = (this.currentFile || '').split('/').slice(0, -1).join('/');
+        const firstSegment = normalized.split('/', 1)[0] || '';
+        const shouldResolveRelative = currentFolder && (
+            normalized.startsWith('./')
+            || normalized.startsWith('../')
+            || !normalized.includes('/')
+            || firstSegment.startsWith('_')
+        );
+        if (shouldResolveRelative) {
+            const parts = `${currentFolder}/${normalized}`.split('/');
+            const stack = [];
+            parts.forEach(part => {
+                if (!part || part === '.') return;
+                if (part === '..') stack.pop();
+                else stack.push(part);
+            });
+            normalized = stack.join('/');
+        }
+        return { external: false, path: normalized, href: `${normalized}${hash ? `#${hash}` : ''}` };
+    }
+
+    assetUrlForHref(href) {
+        const resolved = this.resolveAssetPath(href);
+        if (resolved.external) return resolved.href;
+        const [pathPart, hash = ''] = resolved.href.split('#', 2);
+        return `${this.apiFileUrl(pathPart)}${hash ? `#${this.escapeHtml(hash)}` : ''}`;
+    }
+
+    apiFileUrl(path, options = {}) {
+        const params = new URLSearchParams({ path });
+        const vaultId = options.vault || this.activeVault;
+        if (vaultId) params.set('vault', vaultId);
+        if (options.refresh) params.set('v', String(Date.now()));
+        return `/api/file?${params.toString()}`;
+    }
+
+    renderMediaEmbed(href, label = '') {
+        const resolved = this.resolveAssetPath(href);
+        const path = resolved.external ? resolved.href.split('#', 1)[0] : resolved.path;
+        const kind = this.getViewerKind(path);
+        const url = this.assetUrlForHref(href);
+        const title = this.escapeHtml(label || path.split('/').pop() || path);
+        if (kind === 'image') {
+            return `<figure class="media-embed image-embed"><img src="${url}" alt="${title}"><figcaption>${title}</figcaption></figure>`;
+        }
+        if (kind === 'pdf') {
+            return this.renderPdfPreview(url, title);
+        }
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`;
+    }
+
+    renderPdfPreview(url, title = '', options = {}) {
+        const safeUrl = this.escapeHtml(url);
+        const safeTitle = this.escapeHtml(title || 'PDF');
+        const directClass = options.direct ? ' pdf-direct-preview' : '';
+        return `
+            <div class="media-embed pdf-overview${directClass}" data-pdf-url="${safeUrl}" data-pdf-title="${safeTitle}">
+                <div class="pdf-overview-header">
+                    <span>${safeTitle}</span>
+                    <div class="pdf-overview-actions">
+                        <span class="pdf-page-count">PDF</span>
+                        <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">OPEN PDF</a>
+                    </div>
+                </div>
+                <div class="pdf-canvas-wrap">
+                    <canvas class="pdf-preview-canvas"></canvas>
+                    <div class="pdf-preview-status">Loading PDF preview...</div>
+                </div>
+            </div>
+        `;
+    }
+
+    async renderPdfPreviews(container) {
+        if (!container) return;
+        const cards = [...container.querySelectorAll('.pdf-overview[data-pdf-url]:not([data-pdf-rendered])')];
+        if (!cards.length) return;
+
+        let pdfjs;
+        try {
+            pdfjs = await this.loadPdfJs();
+        } catch (error) {
+            console.error('Failed to load PDF.js:', error);
+            cards.forEach(card => {
+                card.dataset.pdfRendered = 'error';
+                const status = card.querySelector('.pdf-preview-status');
+                if (status) status.textContent = 'PDF renderer failed to load';
+            });
+            return;
+        }
+
+        cards.forEach(card => {
+            card.dataset.pdfRendered = 'loading';
+            this.renderPdfPreviewCard(pdfjs, card);
+        });
+    }
+
+    async renderPdfPreviewCard(pdfjs, card) {
+        const url = card.dataset.pdfUrl;
+        const canvas = card.querySelector('.pdf-preview-canvas');
+        const status = card.querySelector('.pdf-preview-status');
+        const count = card.querySelector('.pdf-page-count');
+        if (!url || !canvas) return;
+
+        try {
+            const loadingTask = pdfjs.getDocument({ url });
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(1);
+            const baseViewport = page.getViewport({ scale: 1 });
+            const wrap = card.querySelector('.pdf-canvas-wrap') || card;
+            const availableWidth = Math.max(240, Math.min(wrap.clientWidth || baseViewport.width, 1100));
+            const scale = Math.min(2, availableWidth / baseViewport.width);
+            const viewport = page.getViewport({ scale });
+            const outputScale = window.devicePixelRatio || 1;
+            const context = canvas.getContext('2d');
+
+            canvas.width = Math.floor(viewport.width * outputScale);
+            canvas.height = Math.floor(viewport.height * outputScale);
+            canvas.style.width = `${Math.floor(viewport.width)}px`;
+            canvas.style.height = `${Math.floor(viewport.height)}px`;
+            context.setTransform(outputScale, 0, 0, outputScale, 0, 0);
+
+            await page.render({ canvasContext: context, viewport }).promise;
+            card.dataset.pdfRendered = 'true';
+            if (status) status.classList.add('hidden');
+            if (count) count.textContent = `${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}`;
+        } catch (error) {
+            console.error('Failed to render PDF preview:', error);
+            card.dataset.pdfRendered = 'error';
+            if (status) status.textContent = 'PDF preview failed. Use OPEN PDF.';
+        }
+    }
+
+    bindPreviewLinkHandlers(previewPane) {
+        if (!previewPane) return;
+        previewPane.onclick = async (event) => {
+            const tag = event.target.closest('button[data-tag-query]');
+            if (tag) {
+                const query = tag.dataset.tagQuery;
+                if (!query) return;
+                event.preventDefault();
+                await this.switchView('home');
+                this.updateUrlForFile(null);
+                this.applyHomeSearch(query);
+                return;
+            }
+
+            const link = event.target.closest('a.wiki-link, button.reader-meta-chip[data-wiki-path]');
+            if (!link) return;
+            const target = link.dataset.wikiPath;
+            if (!target) return;
+            event.preventDefault();
+            this.openFile(target);
+        };
+    }
+
+    renderMetadataBlock() {
+        const [tags = [], links = [], backlinks = []] = this.currentMetadata || [[], [], []];
+        if (!tags.length && !links.length && !backlinks.length) return '';
+
+        const renderChip = (label, path, kind = 'link') => `<button type="button" class="reader-meta-chip reader-meta-chip--${kind}" data-wiki-path="${this.escapeHtml(path)}">${this.escapeHtml(label)}</button>`;
+        const renderRow = (label, itemsHtml) => `<div class="reader-meta-row"><div class="reader-meta-label">${label}</div><div class="reader-meta-items">${itemsHtml}</div></div>`;
+        const tagsHtml = tags.map(tag => {
+            const query = this.formatTagQuery(tag);
+            return `<button type="button" class="reader-meta-chip reader-meta-chip--tag" data-tag-query="${this.escapeHtml(query)}">${this.escapeHtml(query)}</button>`;
+        }).join('');
+        const linksHtml = links.map(link => renderChip(link.label || link.path, link.path, 'link')).join('');
+        const backlinksHtml = backlinks.map(link => renderChip(link.name || link.path, link.path, 'backlink')).join('');
+
+        return `
+            <div class="reader-meta-block">
+                ${tags.length ? renderRow('Tags', tagsHtml) : ''}
+                ${links.length ? renderRow('Links', linksHtml) : ''}
+                ${backlinks.length ? renderRow('Backlinks', backlinksHtml) : ''}
+            </div>
+        `;
+    }
+
+    renderMetadataInlineFooter() {
+        const markup = this.renderMetadataBlock();
+        if (!markup) return '';
+        return `
+            <div class="reader-meta-inline mt-8 pt-4">
+                ${markup}
+            </div>
+        `;
+    }
+
+    updateReaderMetadataPanel() {
+        const panel = document.getElementById('reader-meta-panel');
+        if (!panel) return;
+        const shouldShow = this.viewMode === 'reader' && !!this.currentFile;
+        const markup = shouldShow ? this.renderMetadataBlock() : '';
+        if (!markup) {
+            panel.innerHTML = '';
+            panel.classList.add('hidden');
+            return;
+        }
+        panel.innerHTML = markup;
+        panel.classList.remove('hidden');
+        this.bindPreviewLinkHandlers(panel);
     }
 
     escapeHtml(text) {
@@ -898,6 +2607,22 @@ class ObsidianReader {
     }
 
     showNewFileModal(prefix = '') {
+        let vaultId = this.activeVault;
+        let permissions = this.permissions;
+        if (this.viewMode === 'home') {
+            const target = this.getHomeCreateTarget();
+            if (!target) {
+                this.updateStatus('Select one writable vault');
+                return;
+            }
+            vaultId = target.vault.id;
+            permissions = target.permissions;
+        }
+        if (!permissions.new_files) {
+            this.updateStatus('Create not allowed');
+            return;
+        }
+        this.newFileVault = vaultId;
         document.getElementById('new-file-modal').classList.remove('hidden');
         document.getElementById('new-file-path').value = prefix;
         document.getElementById('new-file-path').focus();
@@ -918,10 +2643,17 @@ class ObsidianReader {
             error.classList.remove('hidden');
             return;
         }
-        if (!/\.(md|canvas)$/i.test(path)) path += '.md';
+        const vaultId = this.newFileVault || this.activeVault;
+        const permissions = this.permissionsForVault(vaultId);
+        if (!this.getExtension(path)) path += this.defaultCreateExtension(permissions);
+        if (!this.canCreatePath(path, permissions)) {
+            error.textContent = 'File type is not allowed for this vault';
+            error.classList.remove('hidden');
+            return;
+        }
 
         try {
-            const response = await this.fetchApi('/api/files', {
+            const response = await this.fetchApiForVault('/api/files', vaultId, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: path, content: '' })
@@ -929,9 +2661,8 @@ class ObsidianReader {
 
             if (response.ok) {
                 this.hideNewFileModal();
-                this.switchView('reader');
-                await this.loadFileTree('reader-file-tree');
-                await this.loadFile(path);
+                this.newFileVault = null;
+                await this.openFile(path, { vault: vaultId });
             } else if (response.status === 409) {
                 error.textContent = 'File already exists';
                 error.classList.remove('hidden');
@@ -946,6 +2677,10 @@ class ObsidianReader {
 
     showRenameModal() {
         if (!this.currentFile) return;
+        if (!this.canRenamePath(this.currentFile)) {
+            this.updateStatus('Rename not allowed');
+            return;
+        }
         document.getElementById('rename-file-modal').classList.remove('hidden');
         const input = document.getElementById('rename-file-path');
         input.value = this.currentFile;
@@ -972,7 +2707,13 @@ class ObsidianReader {
             this.hideRenameModal();
             return;
         }
-        if (!/\.(md|canvas)$/i.test(newPath)) newPath += '.md';
+        if (!this.getExtension(newPath)) newPath += this.getExtension(this.currentFile) || this.defaultCreateExtension();
+        const destinationFormats = [...(this.permissions.files_format_new || []), ...(this.permissions.files_format_edit || [])];
+        if (!this.canRenamePath(this.currentFile) || !this.matchesAllowedFormat(newPath, destinationFormats)) {
+            error.textContent = 'Destination file type is not allowed';
+            error.classList.remove('hidden');
+            return;
+        }
 
         try {
             const response = await this.fetchApi('/api/rename', {
@@ -997,9 +2738,14 @@ class ObsidianReader {
         }
     }
 
-    async deleteFile(path) {
+    async deleteFile(path, vaultId = this.activeVault) {
+        const permissions = this.permissionsForVault(vaultId);
+        if (!permissions.delete) {
+            alert('Delete is not allowed for this vault.');
+            return;
+        }
         try {
-            const res = await this.fetchApi(`/api/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+            const res = await this.fetchApiForVault(`/api/file?path=${encodeURIComponent(path)}`, vaultId, { method: 'DELETE' });
             if (res.ok) {
                 if (this.currentFile === path) {
                     this.switchView('home');
@@ -1019,6 +2765,8 @@ class ObsidianReader {
     // Config Methods — simplified VS Code / Obsidian model
     populateConfigUI() {
         document.getElementById('config-vault').value = this.activeVault;
+        this.normalizeSelectedVaults();
+        this.renderVaultOptions();
         document.getElementById('config-theme').value = this.themeConfig.theme || 'light';
         document.getElementById('config-font').value = this.themeConfig.font || 'font-mono-value';
         document.getElementById('config-size').value = this.themeConfig.size || '14px';
@@ -1029,10 +2777,18 @@ class ObsidianReader {
         document.getElementById('config-color-header').value = this.themeConfig.header || '#ff5c00';
         document.getElementById('config-color-codebg').value = this.themeConfig.codebg || '#e4e4e7';
         document.getElementById('config-color-codetext').value = this.themeConfig.codetext || '#e01e5a';
+        this.syncPalettePreview();
     }
 
-    saveConfig() {
-        this.activeVault = document.getElementById('config-vault').value;
+    async saveConfig() {
+        const checkedVaults = [...document.querySelectorAll('input[name="mdvr-vault"]:checked')].map(input => input.value);
+        const nextSelected = checkedVaults.length ? checkedVaults : this.getSelectedVaultOptions().map(option => option.id);
+        this.saveSelectedVaultIds(nextSelected);
+        this.saveVaultAliases();
+        if (!this.selectedVaultIds.includes(this.activeVault)) {
+            this.activeVault = this.selectedVaultIds[0] || document.getElementById('config-vault').value;
+        }
+        localStorage.setItem('mdvr_vault', this.activeVault);
         localStorage.setItem('owr_vault', this.activeVault);
 
         this.themeConfig = {
@@ -1047,14 +2803,17 @@ class ObsidianReader {
             codebg: document.getElementById('config-color-codebg').value,
             codetext: document.getElementById('config-color-codetext').value
         };
+        localStorage.setItem('mdvr_config', JSON.stringify(this.themeConfig));
         localStorage.setItem('owr_config', JSON.stringify(this.themeConfig));
         this.applyConfig();
+        await this.loadServerConfig();
     }
 
     applyThemePreset(theme) {
         // Simplified: bg, body, sidebar, accent, header, codebg, codetext
         const presets = {
             light:     { bg: '#ffffff', body: '#1a1c1c', sidebar: '#f5f5f5', accent: '#ff5c00', header: '#ff5c00', codebg: '#e4e4e7', codetext: '#e01e5a' },
+            obsidian:  { bg: '#1e1e1e', body: '#dcddde', sidebar: '#161618', accent: '#7c3aed', header: '#a78bfa', codebg: '#242428', codetext: '#f59e0b' },
             neon:      { bg: '#0a0e12', body: '#66fcf1', sidebar: '#0b0c10', accent: '#ff003c', header: '#ff003c', codebg: '#1f2833', codetext: '#45a29e' },
             vscode:    { bg: '#1e1e1e', body: '#d4d4d4', sidebar: '#252526', accent: '#007acc', header: '#569cd6', codebg: '#2d2d2d', codetext: '#ce9178' },
             github:    { bg: '#ffffff', body: '#24292f', sidebar: '#f6f8fa', accent: '#2da44e', header: '#0969da', codebg: '#f6f8fa', codetext: '#24292f' },
@@ -1071,7 +2830,28 @@ class ObsidianReader {
             document.getElementById('config-color-header').value = p.header;
             document.getElementById('config-color-codebg').value = p.codebg;
             document.getElementById('config-color-codetext').value = p.codetext;
+            this.syncPalettePreview();
         }
+    }
+
+    syncPalettePreview() {
+        const preview = document.getElementById('config-palette-preview');
+        if (!preview) return;
+        const ids = [
+            'config-color-bg',
+            'config-color-body',
+            'config-color-sidebar',
+            'config-color-accent',
+            'config-color-header',
+            'config-color-codebg',
+            'config-color-codetext'
+        ];
+        preview.innerHTML = '';
+        ids.forEach(id => {
+            const swatch = document.createElement('span');
+            swatch.style.background = document.getElementById(id)?.value || 'transparent';
+            preview.appendChild(swatch);
+        });
     }
 
     applyConfig() {

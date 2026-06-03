@@ -1,0 +1,30 @@
+services:
+  mdvr:
+    container_name: mdvr
+    build:
+      context: .
+    ports:
+      # Host 8088 -> container nginx 8080.
+      - "8088:8080"
+    volumes:
+      # Internal demo/test vault. It is listed first and write-enabled in
+      # mdvr.yaml so you can verify create/edit/delete without risking notes.
+      - ./welcome-vault:/app/welcome-vault
+
+      # Obsidian example vault mount. Put MDVR_OBSIDIAN_VAULT in .env to point
+      # at a real vault; the fallback ./vaults/obsidian directory is gitignored.
+      - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
+
+      # To intentionally allow writes to the Obsidian vault, change BOTH places:
+      # 1. Remove :ro from the Obsidian mount above.
+      # 2. Change the "obsidian" vault mode in mdvr.yaml to read-write.
+      # Keep auth enabled before doing this.
+      - ./mdvr.yaml:/app/mdvr.yaml:ro
+    environment:
+      MDVR_CONFIG_FILE: /app/mdvr.yaml
+      MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}
+      MDVR_AUTH_USER: ${MDVR_AUTH_USER:-mdvr}
+      MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}
+      MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
+      MDVR_AUTH_FILE: /run/mdvr.htpasswd
+    restart: unless-stopped
