@@ -1,18 +1,16 @@
-# Obsidian Web Reader (OWR)
+# Markdown Vault Reader (mdvr)
 
-A high-performance, containerized web interface for reading and managing local Obsidian vaults via a browser. Built with FastAPI and vanilla JavaScript, featuring an industrial Teenage Engineering K.O.II aesthetic, full multi-vault support, and deep customization options.
-
-![Obsidian Web Reader Demo](https://raw.githubusercontent.com/your-username/obsidian-web-reader/main/screenshot.png) <!-- Update with an actual screenshot -->
+A high-performance, containerized web interface for reading and managing local markdown and excalidraw files vaults via a browser. Built with FastAPI and vanilla JavaScript.
 
 ## Features
 
-- **Blazing Fast SPA:** Native fetch API and vanilla JS for an ultra-lightweight client.
-- **Multi-Vault Support:** Dynamically switch between multiple Obsidian vaults mounted via Docker.
-- **Deep Customization:** 
-  - 7 Built-in Theme Presets (K.O.II, Neon Cyberpunk, VS Code Dark+, etc.)
-  - Change Typography, Text Size, and global UI color overrides in real-time.
-- **Full File Management:** Create, Read, Update, Delete, and Rename your markdown files directly in the browser.
-- **Responsive Design:** Completely fluid interface with a mobile-optimized drawer sidebar.
+- **Fast SPA:** Native fetch API and vanilla JS for an ultra-lightweight client.
+- **Multi-Vault Support:** Dynamically switch between multiple vaults mounted via Docker.
+- **Some Customization:** 
+  - Theme Presets
+  - Change Typography, Text Size, and global UI color overrides.
+- **File Management:** Create, Read, Update, Delete, and Rename your files directly in the browser.
+- **Responsive Design:** Somewhat fluid interface with a mobile-optimized drawer sidebar.
 
 ## Prerequisites
 
@@ -39,7 +37,7 @@ A high-performance, containerized web interface for reading and managing local O
      obsidian-reader
    ```
 
-   If you have multiple vaults inside a parent directory, simply mount the parent directory. OWR will automatically detect the subdirectories and let you switch between them dynamically in the Configuration menu.
+   If you have multiple vaults inside a parent directory, simply mount the parent directory. mdvr will automatically detect the subdirectories and let you switch between them dynamically in the Configuration menu.
 
 3. **Access the Reader:**
    Open your browser and navigate to `http://localhost:3000` (or the port you mapped).
