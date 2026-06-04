@@ -4,7 +4,7 @@
 
 mdvr is designed to run as a single Docker service.
 
-Typical flow:
+Typical flow from a source checkout:
 
 ```bash
 docker compose up -d --build
@@ -27,6 +27,38 @@ Change the password before exposing mdvr outside a trusted local machine.
 
 The container listens on port `8080`, and the default host mapping is `8088:8080`.
 Port `8088` is the project default for Docker Compose.
+
+## Published image install
+
+For a simple install without building locally, use:
+
+```text
+ghcr.io/hb2d87/mdvr:latest
+```
+
+Example:
+
+```yaml
+services:
+  mdvr:
+    image: ghcr.io/hb2d87/mdvr:latest
+    container_name: mdvr
+    ports:
+      - "8088:8080"
+    volumes:
+      # Optional real vault mount. Start read-only.
+      - /absolute/path/to/your/obsidian-vault:/vaults/obsidian:ro
+    environment:
+      MDVR_AUTH_ENABLED: "1"
+      MDVR_AUTH_USER: mdvr
+      MDVR_AUTH_PASSWORD: change-this-password
+      MDVR_AUTH_REALM: MDVR
+    restart: unless-stopped
+```
+
+The image already contains the default config and demo vault. Demo vault changes
+inside the image are disposable; mount your own config and vault paths when you
+want persistent customized state.
 
 ## Example `docker-compose.yml`
 

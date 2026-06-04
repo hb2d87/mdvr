@@ -1,0 +1,17 @@
+services:
+  mdvr:
+    image: ghcr.io/hb2d87/mdvr:latest
+    container_name: mdvr
+    ports:
+      - "8088:8080"
+    volumes:
+      # Optional real vault mount. It is read-only by default.
+      # Put MDVR_OBSIDIAN_VAULT=/absolute/path/to/your/vault in .env.
+      - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
+    environment:
+      MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}
+      MDVR_AUTH_USER: ${MDVR_AUTH_USER:-mdvr}
+      MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}
+      MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
+      MDVR_AUTH_FILE: /run/mdvr.htpasswd
+    restart: unless-stopped

@@ -36,7 +36,7 @@ lightweight that works in any web browser.
 
 ## Quick Start
 
-Start the container:
+From a source checkout, start the container:
 
 ```bash
 docker compose up -d --build
@@ -62,6 +62,36 @@ Docker maps `8088:8080`. This is a reasonable local default because it avoids
 privileged ports and common development ports. If you expose mdvr more broadly,
 put it behind a network boundary you trust, such as a reverse proxy, VPN, or
 Tailscale.
+
+## Published Docker Image
+
+The published image is:
+
+```text
+ghcr.io/hb2d87/mdvr:latest
+```
+
+Use it when you want to run mdvr without cloning and building the repository:
+
+```yaml
+services:
+  mdvr:
+    image: ghcr.io/hb2d87/mdvr:latest
+    container_name: mdvr
+    ports:
+      - "8088:8080"
+    volumes:
+      - /absolute/path/to/your/obsidian-vault:/vaults/obsidian:ro
+    environment:
+      MDVR_AUTH_ENABLED: "1"
+      MDVR_AUTH_USER: mdvr
+      MDVR_AUTH_PASSWORD: change-this-password
+      MDVR_AUTH_REALM: MDVR
+    restart: unless-stopped
+```
+
+The image includes the demo vault and default config. Mount your real vault
+read-only first, then change write settings only after backups are in place.
 
 ## Default Vaults
 
