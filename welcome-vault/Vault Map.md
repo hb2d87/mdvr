@@ -4,6 +4,7 @@
 - [[Welcome]]
 - [[Getting-Started]]
 - [[Troubleshooting]]
+- [[Demo]]
 - [[Roadmap]]
 
 ## Folders

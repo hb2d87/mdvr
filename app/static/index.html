@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-    <link rel="stylesheet" href="/style.css?v=20260604-mobile-menu">
+    <link rel="stylesheet" href="/style.css?v=20260604-publication">
     <link rel="stylesheet" href="https://unpkg.com/@excalidraw/excalidraw@0.18.1/dist/prod/index.css">
 
     <script id="tailwind-config">
@@ -253,7 +253,7 @@
                     <div class="config-section-head">
                         <div>
                             <h3>Vault</h3>
-                            <p>Select one vault for a flat tree, or multiple vaults for combined Home search. Rename display labels locally.</p>
+                            <p>Select one vault for a flat tree, or multiple vaults for combined Home search. Local aliases affect only this browser.</p>
                         </div>
                         <select id="config-vault" class="config-select hidden" aria-label="Active vault"></select>
                     </div>
@@ -346,6 +346,61 @@
                 </button>
             </div>
         </div>
+
+        <!-- View: VAULT CONFIG -->
+        <div id="view-vault-config" class="view-panel w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[960px] mx-auto hidden">
+            <div class="vault-config-page-head">
+                <button id="vault-config-back-btn" type="button" class="header-icon-button btn-standard" title="Back to settings">
+                    <span class="material-symbols-outlined text-[20px]">arrow_back</span>
+                </button>
+                <div>
+                    <h2 id="vault-config-title" class="config-title vault-config-title">Vault</h2>
+                    <p id="vault-config-subtitle" class="config-note"></p>
+                </div>
+            </div>
+
+            <div class="config-shell mb-6">
+                <div class="config-intro">
+                    <span class="module-led"></span>
+                    <div>
+                        <p class="config-kicker">VAULT CONFIG</p>
+                        <p class="config-copy">Change this vault entry in mdvr.yaml. Auth and passwords belong in Docker Compose.</p>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <div class="config-section-head">
+                        <div>
+                            <h3>Light Config</h3>
+                            <p>Name, path, mode, and soft-delete for this vault.</p>
+                        </div>
+                    </div>
+                    <p id="single-vault-config-status" class="config-note"></p>
+                    <div id="single-vault-config-card" class="vault-config-list"></div>
+                </div>
+
+                <div class="config-section">
+                    <div class="config-section-head">
+                        <div>
+                            <h3>Advanced Vault YAML</h3>
+                            <p>Edit only this vault mapping. Invalid YAML will not be saved.</p>
+                        </div>
+                        <button id="single-vault-advanced-toggle" class="config-mini-button" type="button">Open YAML</button>
+                    </div>
+                    <p id="single-vault-advanced-status" class="config-note"></p>
+                    <textarea id="single-vault-advanced-text" class="advanced-config-text hidden" spellcheck="false" aria-label="Raw vault YAML"></textarea>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-3">
+                <button id="single-vault-cancel-btn" class="px-4 py-2 font-mono-label text-[11px] font-bold uppercase rounded-sm transition-colors" style="background-color: var(--c-sidebar); color: var(--c-body);">
+                    Cancel
+                </button>
+                <button id="single-vault-save-btn" class="px-4 py-2 text-white font-mono-label text-[11px] font-bold uppercase rounded-sm shadow-sm transition-colors flex items-center gap-1" style="background-color: var(--c-accent);">
+                    <span class="material-symbols-outlined text-[14px]">save</span> Save Vault
+                </button>
+            </div>
+        </div>
     </main>
 
     <input id="home-upload-input" class="hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple>
@@ -364,6 +419,10 @@
     <!-- Reader Context Menu -->
     <div id="reader-context-menu" class="hidden fixed shadow-lg py-1 z-[100] min-w-[190px] font-mono-label text-[11px] rounded-sm uppercase" style="background-color: var(--c-sidebar); border: 1px solid color-mix(in srgb, var(--c-body) 15%, transparent);">
         <button id="reader-cm-toggle-view" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">visibility</span> <span data-reader-toggle-label>View / Edit</span></button>
+        <div id="reader-cm-edit-divider" class="hidden" style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent); margin: 4px 0;"></div>
+        <button id="reader-cm-copy" class="hidden w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">content_copy</span> Copy</button>
+        <button id="reader-cm-cut" class="hidden w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">content_cut</span> Cut</button>
+        <button id="reader-cm-paste" class="hidden w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">content_paste</span> Paste</button>
         <button id="reader-cm-font-inc" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">text_increase</span> Increase Font</button>
         <button id="reader-cm-font-dec" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">text_decrease</span> Decrease Font</button>
         <button id="reader-cm-attach-media" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">attach_file_add</span> Add Media</button>
@@ -397,6 +456,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260604-mobile-menu"></script>
+    <script src="/app.js?v=20260604-publication"></script>
 </body>
 </html>

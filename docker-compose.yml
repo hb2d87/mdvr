@@ -3,23 +3,34 @@ services:
     container_name: mdvr
     build:
       context: .
+      args:
+        INSTALL_DEV_DEPS: ${MDVR_INSTALL_DEV_DEPS:-0}
     ports:
       # Host 8088 -> container nginx 8080.
       - "8088:8080"
     volumes:
-      # Internal demo/test vault. It is listed first and write-enabled in
-      # mdvr.yaml so you can verify create/edit/delete without risking notes.
-      - ./welcome-vault:/app/welcome-vault
+      # Internal demo/test vault. Remove this mount if you do not want demo
+      # content in Settings/Home.
+      - ./welcome-vault:/vaults/demo
 
       # Obsidian example vault mount. Put MDVR_OBSIDIAN_VAULT in .env to point
       # at a real vault; the fallback ./vaults/obsidian directory is gitignored.
       - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
 
+      # Add more vaults by mounting each host folder to /vaults/<id>. mdvr
+      # discovers direct children of /vaults automatically; Settings/mdvr.yaml
+      # only store names, modes, and permissions for those discovered ids.
+      # Examples:
+      # - ${MDVR_WORK_VAULT:-./vaults/work}:/vaults/work:ro
+      # - ${MDVR_ARCHIVE_VAULT:-./vaults/archive}:/vaults/archive:ro
+
       # To intentionally allow writes to the Obsidian vault, change BOTH places:
       # 1. Remove :ro from the Obsidian mount above.
       # 2. Change the "obsidian" vault mode in mdvr.yaml to read-write.
       # Keep auth enabled before doing this.
-      - ./mdvr.yaml:/app/mdvr.yaml:ro
+      # Mounted writable so Settings can update vault entries. Keep Basic Auth
+      # enabled when allowing browser-side config changes.
+      - ./mdvr.yaml:/app/mdvr.yaml
     environment:
       MDVR_CONFIG_FILE: /app/mdvr.yaml
       MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}
@@ -27,4 +38,5 @@ services:
       MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}
       MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
       MDVR_AUTH_FILE: /run/mdvr.htpasswd
+      MDVR_VAULT_ROOTS: ${MDVR_VAULT_ROOTS:-/vaults}
     restart: unless-stopped

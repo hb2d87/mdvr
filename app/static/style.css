@@ -48,6 +48,10 @@ html, body { height: 100%; overflow: hidden; }
         padding-left: 0.75rem;
     }
 
+    #header-primary:has(#header-menu-btn:not(.hidden)) {
+        padding-left: 0 !important;
+    }
+
     #header-actions {
         flex: 0 0 auto;
         gap: 0 !important;
@@ -353,12 +357,13 @@ html, body { height: 100%; overflow: hidden; }
 }
 
 .vault-option {
-    align-items: flex-start;
+    align-items: center;
     cursor: pointer;
     display: grid;
-    gap: 0.75rem;
+    gap: 0.65rem;
     grid-template-columns: auto 1fr auto;
-    padding: 0.8rem;
+    min-height: 58px;
+    padding: 0.55rem 0.65rem;
     transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
@@ -378,7 +383,11 @@ html, body { height: 100%; overflow: hidden; }
 
 .vault-option input {
     accent-color: var(--c-accent);
-    margin-top: 0.2rem;
+    margin: 0;
+}
+
+.vault-option-body {
+    min-width: 0;
 }
 
 .vault-option strong,
@@ -389,6 +398,40 @@ html, body { height: 100%; overflow: hidden; }
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
     line-height: 1.35;
+}
+
+.vault-option-body strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vault-option-body p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vault-option-actions {
+    align-items: center;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.vault-config-button {
+    align-items: center;
+    background: color-mix(in srgb, var(--c-bg) 82%, var(--c-sidebar) 18%);
+    border: 1px solid color-mix(in srgb, var(--c-body) 16%, transparent);
+    color: var(--c-body);
+    display: flex;
+    height: 34px;
+    justify-content: center;
+    width: 38px;
+}
+
+.vault-config-button:hover {
+    background: var(--c-accent);
+    color: #ffffff;
 }
 
 .vault-option code {
@@ -441,6 +484,169 @@ html, body { height: 100%; overflow: hidden; }
 .vault-status.is-missing {
     border-color: color-mix(in srgb, #ff5c00 65%, transparent);
     color: #ff5c00;
+}
+
+.vault-config-page-head {
+    align-items: center;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-body) 15%, transparent);
+    display: grid;
+    gap: 0.8rem;
+    grid-template-columns: auto 1fr;
+    margin-bottom: 1.5rem;
+    padding-bottom: 0.65rem;
+}
+
+.vault-config-page-head .config-title {
+    border-bottom: 0;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+.vault-config-title {
+    line-height: 1.1;
+}
+
+.vault-config-list {
+    display: grid;
+    gap: 0.65rem;
+}
+
+.vault-config-card {
+    background: color-mix(in srgb, var(--c-bg) 92%, var(--c-sidebar) 8%);
+    border: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent);
+    padding: 0.8rem;
+}
+
+.vault-config-card-head {
+    align-items: flex-start;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+.vault-config-card-head strong {
+    color: var(--c-body);
+    display: block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.vault-config-card-head p {
+    color: color-mix(in srgb, var(--c-body) 54%, transparent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    margin-top: 0.2rem;
+    max-width: 32rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vault-config-statuses {
+    align-items: flex-end;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.vault-config-grid {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vault-config-grid label {
+    color: color-mix(in srgb, var(--c-body) 62%, transparent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.vault-config-grid input,
+.vault-config-grid select,
+.advanced-config-text {
+    background: color-mix(in srgb, var(--c-bg) 86%, var(--c-sidebar) 14%);
+    border: 1px solid color-mix(in srgb, var(--c-body) 14%, transparent);
+    color: var(--c-body);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    margin-top: 0.25rem;
+    min-height: 32px;
+    outline: none;
+    padding: 0.4rem 0.5rem;
+    width: 100%;
+}
+
+.vault-config-grid input:focus,
+.vault-config-grid select:focus,
+.advanced-config-text:focus {
+    border-color: color-mix(in srgb, var(--c-accent) 70%, transparent);
+}
+
+.vault-config-wide {
+    grid-column: 1 / -1;
+}
+
+.vault-config-check {
+    align-items: center;
+    display: flex;
+    gap: 0.45rem;
+    min-height: 32px;
+}
+
+.vault-config-check input {
+    accent-color: var(--c-accent);
+    flex: 0 0 auto;
+    margin: 0;
+    width: auto;
+}
+
+.vault-config-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.65rem;
+}
+
+.single-vault-actions {
+    border-top: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+}
+
+.single-vault-action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.6rem;
+}
+
+.config-danger-button {
+    border-color: color-mix(in srgb, #ef4444 48%, transparent);
+    color: #ef4444;
+}
+
+.advanced-config-text {
+    line-height: 1.45;
+    min-height: 320px;
+    resize: vertical;
+    white-space: pre;
+}
+
+.config-note[data-tone="ok"] {
+    color: #20d79a;
+}
+
+.config-note[data-tone="warn"] {
+    color: var(--c-accent);
+}
+
+.config-note[data-tone="error"] {
+    color: #ef4444;
 }
 
 .config-mini-button {
@@ -532,6 +738,31 @@ html, body { height: 100%; overflow: hidden; }
 
     .config-select {
         max-width: none;
+    }
+
+    .vault-config-card-head,
+    .vault-config-statuses {
+        align-items: stretch;
+    }
+
+    .vault-config-card-head {
+        flex-direction: column;
+    }
+
+    .vault-config-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .vault-option {
+        gap: 0.5rem;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        padding-left: 0.55rem;
+        padding-right: 0.45rem;
+    }
+
+    .vault-config-button {
+        border-right: 0;
+        width: 34px;
     }
 }
 

@@ -6,7 +6,7 @@ Open these in order:
 2. [[Vault Map]]
 3. [[Projects/README]]
 4. [[Research/media-test]]
+5. [[Demo]]
 
-Then open Settings and select both `demo` and `obsidian`. With one vault
-selected, the Home tree is flat. With multiple vaults selected, each vault gets
-its own root folder.
+Then open Settings. With one mounted vault selected, the Home tree is flat. With
+multiple mounted vaults selected, each vault gets its own root folder.
