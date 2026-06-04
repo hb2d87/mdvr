@@ -3,12 +3,13 @@
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" name="viewport"/>
-    <title>Obsidian Web Reader</title>
+    <title>MDVR - md_vault_reader</title>
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
-    <link rel="stylesheet" href="style.css">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+    <link rel="stylesheet" href="/style.css?v=20260604-mobile-header">
+    <link rel="stylesheet" href="https://unpkg.com/@excalidraw/excalidraw@0.18.1/dist/prod/index.css">
+
     <script id="tailwind-config">
         tailwind.config = {
           darkMode: "class",
@@ -75,22 +76,33 @@
 <body class="text-on-surface font-body min-h-screen flex flex-col">
 
     <!-- Top Header -->
-    <header class="fixed top-0 left-0 w-full z-50 flex items-center justify-between px-3 h-12 border-b" style="background-color: var(--c-sidebar); border-color: color-mix(in srgb, var(--c-body) 15%, transparent);">
-        <div class="flex items-center gap-3 overflow-hidden min-w-0">
-            <button id="header-menu-btn" class="hidden h-8 w-8 flex-shrink-0 flex items-center justify-center btn-standard" title="Menu">
-                <span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">menu</span>
+    <header class="fixed top-0 left-0 w-full z-50 flex items-center justify-between gap-4 px-3 h-12 border-b overflow-hidden" style="background-color: var(--c-sidebar); border-color: color-mix(in srgb, var(--c-body) 15%, transparent);">
+        <div id="header-primary" class="flex items-center gap-3 overflow-hidden min-w-0">
+            <button id="header-menu-btn" class="hidden header-icon-button flex-shrink-0 flex items-center justify-center btn-standard" title="Menu">
+                <span class="material-symbols-outlined text-[20px]" style="color: var(--c-body)">menu</span>
             </button>
-            <span id="header-title" class="font-black tracking-tighter text-[14px] cursor-pointer hover:opacity-80 transition-opacity truncate max-w-[200px] md:max-w-md" title="Click to rename" style="color: var(--c-body)">OWR - VAULT</span>
+            <div class="flex flex-col min-w-0 overflow-hidden">
+                <span id="header-title" class="font-black tracking-tighter text-[14px] leading-tight cursor-pointer hover:opacity-80 transition-opacity whitespace-nowrap overflow-hidden text-ellipsis max-w-[45vw] md:max-w-[55vw]" title="MDVR" style="color: var(--c-body)">MDVR</span>
+                <span id="header-path" class="font-mono text-[10px] leading-tight whitespace-nowrap overflow-hidden text-ellipsis max-w-[45vw] md:max-w-[55vw]" style="color: color-mix(in srgb, var(--c-body) 62%, transparent); opacity: 0.85;">Markdown vault reader</span>
+            </div>
         </div>
-        <div class="flex items-center gap-3">
-            <span id="save-indicator" class="font-mono text-[11px] tracking-widest uppercase hidden" style="color: var(--c-accent)">[MODIFIED]</span>
-            <span id="header-datetime" class="font-mono text-[10px] uppercase hidden flex-shrink-0" style="color: var(--c-body); opacity: 0.5;"></span>
-            <button id="header-config-btn" class="hidden h-8 w-8 flex-shrink-0 flex items-center justify-center btn-standard" title="Configuration">
-                <span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">settings</span>
+        <div id="header-actions" class="flex items-center gap-3 flex-shrink-0 ml-auto">
+            <button id="header-new-file-btn" class="hidden header-icon-button flex-shrink-0 flex items-center justify-center btn-standard" title="New file">
+                <span class="material-symbols-outlined text-[20px]" style="color: var(--c-body)">add</span>
             </button>
-            <button id="preview-toggle" class="hidden h-8 w-8 flex-shrink-0 flex items-center justify-center btn-standard" title="Toggle Preview">
-                <span class="material-symbols-outlined text-[16px]" data-icon="visibility" id="preview-icon" style="color: var(--c-body)">visibility</span>
+            <button id="download-current-file" class="hidden header-icon-button flex-shrink-0 flex items-center justify-center btn-standard" title="Download file" aria-label="Download file">
+                <span class="material-symbols-outlined text-[20px]" style="color: var(--c-body)">download</span>
             </button>
+            <button id="header-config-btn" class="hidden header-icon-button flex-shrink-0 flex items-center justify-center btn-standard" title="Configuration">
+                <span class="material-symbols-outlined text-[20px]" style="color: var(--c-body)">settings</span>
+            </button>
+            <button id="preview-toggle" class="hidden header-icon-button flex-shrink-0 flex items-center justify-center btn-standard" title="Toggle Preview">
+                <span class="material-symbols-outlined text-[20px]" data-icon="visibility" id="preview-icon" style="color: var(--c-body)">visibility</span>
+            </button>
+            <div id="header-datetime" class="hidden flex items-end text-right leading-tight min-w-0 header-datetime-row flex-col">
+                <span id="header-date" class="font-mono uppercase whitespace-nowrap" style="color: var(--c-body); opacity: 0.65;"></span>
+                <span id="header-time" class="font-mono uppercase whitespace-nowrap" style="color: var(--c-body); opacity: 0.9;"></span>
+            </div>
         </div>
     </header>
 
@@ -98,64 +110,96 @@
     <main id="main-container" class="flex-grow pt-12 w-full flex overflow-hidden mx-auto">
         
         <!-- View: HOME (Combined Home & Files) -->
-        <div id="view-home" class="view-panel w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[1400px] mx-auto">
-            <!-- Search Field (Standardized) -->
+        <div id="view-home" class="view-panel home-view w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[1600px] mx-auto">
+            <!-- Flat search field -->
             <div class="mb-lg w-full">
-                <div class="flex-grow flex items-center btn-standard h-10 px-3 w-full" style="justify-content: flex-start; cursor: text;">
+                <label class="flex-grow flex items-center btn-standard h-10 px-3 w-full" for="home-search" style="justify-content: flex-start; cursor: text;">
                     <span class="material-symbols-outlined text-[18px] mr-2" style="color: var(--c-body); opacity: 0.5;">search</span>
                     <input type="text" id="home-search" class="w-full bg-transparent border-none outline-none font-mono text-sm uppercase focus:ring-0 px-2 py-0" placeholder="SEARCH..." style="color: var(--c-body);">
-                </div>
+                </label>
             </div>
 
-            <div class="flex flex-col md:flex-row gap-8 w-full">
+            <div class="flex flex-col gap-8 w-full">
                 <!-- FILES (Left) -->
-                <div class="w-full md:w-1/3 flex flex-col order-2 md:order-1">
-                    <div class="flex items-center justify-between mb-sm pb-2" style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent);">
+                <div class="w-full flex flex-col order-2">
+                    <div class="module-heading flex items-center justify-between mb-sm pb-2">
                         <div class="flex items-center gap-2">
                             <h2 class="font-mono-label text-sm uppercase" style="color: var(--c-body);">Files</h2>
                         </div>
-                        <button id="nav-new-file" class="px-3 py-1 flex items-center justify-center gap-1 mechanical-button rounded-sm text-[10px] font-bold uppercase hover:opacity-90" style="background-color: var(--c-accent); color: #fff;">
-                            <span class="material-symbols-outlined text-[14px]">add</span> NEW_FILE
-                        </button>
+                        <div class="flex items-center gap-3">
+                            <span id="home-tree-count" class="module-readout">-- OBJECTS</span>
+                            <button id="toggle-file-tree" class="tree-toggle px-2 py-1 flex items-center justify-center gap-1 text-[10px] font-bold uppercase" type="button" aria-pressed="false">
+                                <span class="material-symbols-outlined text-[14px]">unfold_more</span> EXPAND_FOLDERS
+                            </button>
+                        </div>
                     </div>
-                    <div class="border p-4 shadow-sm min-h-[300px] flex-grow" style="background-color: var(--c-bg); border-color: color-mix(in srgb, var(--c-body) 12%, transparent);">
+                    <div id="home-file-tree-panel" class="file-tree-panel border p-4 shadow-sm min-h-[300px] flex-grow" style="background-color: var(--c-bg); border-color: color-mix(in srgb, var(--c-body) 12%, transparent);">
                         <div id="file-tree" class="font-mono text-sm">
                             <!-- Populated via JS -->
                         </div>
                     </div>
+                    <div class="mt-3 flex-shrink-0">
+                        <button id="nav-new-file" class="w-full px-3 py-2 flex items-center justify-center gap-1 mechanical-button rounded-sm text-[10px] font-bold uppercase hover:opacity-90" style="background-color: var(--c-accent); color: #fff;">
+                            <span class="material-symbols-outlined text-[14px]">add</span> NEW_FILE
+                        </button>
+                    </div>
                 </div>
 
                 <!-- RECENT ARTIFACTS (Right) -->
-                <div class="w-full md:w-2/3 flex flex-col order-1 md:order-2">
-                    <div class="flex items-center justify-between mb-sm pb-2" style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent);">
+                <div class="w-full flex flex-col order-1">
+                    <div class="module-heading flex items-center justify-between mb-sm pb-2">
                         <div class="flex items-center gap-2">
-                            <span class="w-3 h-3 rounded-sm" style="background-color: var(--c-accent);"></span>
+                            <span class="module-led"></span>
                             <h2 class="font-mono-label text-sm uppercase" style="color: var(--c-body);">Recent_Artifacts</h2>
                         </div>
+                        <div class="recent-limit-control">
+                            <button id="recent-limit-dec" class="count-stepper" type="button" title="Show fewer recent artifacts">−</button>
+                            <span id="home-recent-count" class="module-readout">-- ACTIVE</span>
+                            <button id="recent-limit-inc" class="count-stepper" type="button" title="Show more recent artifacts">+</button>
+                        </div>
                     </div>
-                    <div id="recent-files-grid" class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+                    <div id="recent-files-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                         <!-- Populated via JS -->
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- View: BROWSER (Folder / Tags) -->
+        <div id="view-browser" class="view-panel w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[1600px] mx-auto hidden">
+            <div class="mb-4 flex items-center justify-between gap-3 flex-wrap">
+                <div class="min-w-0">
+                    <div id="browser-breadcrumbs" class="font-mono text-[10px] uppercase opacity-60 break-words whitespace-normal"></div>
+                    <h2 id="browser-title" class="font-mono-value text-2xl font-bold uppercase tracking-tighter break-words whitespace-normal leading-tight" style="color: var(--c-body);"></h2>
+                    <p id="browser-subtitle" class="font-mono text-xs uppercase opacity-50 mt-1"></p>
+                </div>
+                <div class="flex items-center gap-2 w-full md:w-auto">
+                    <div class="flex-grow md:w-[360px] flex items-center btn-standard h-10 px-3" style="justify-content: flex-start; cursor: text;">
+                        <span class="material-symbols-outlined text-[18px] mr-2" style="color: var(--c-body); opacity: 0.5;">search</span>
+                        <input type="text" id="browser-search" class="w-full bg-transparent border-none outline-none font-mono text-sm uppercase focus:ring-0 px-2 py-0" placeholder="SEARCH..." style="color: var(--c-body);">
+                    </div>
+                </div>
+            </div>
+            <div id="browser-actions" class="flex flex-wrap gap-2 mb-4"></div>
+            <div id="browser-list" class="border p-4 shadow-sm min-h-[240px]" style="background-color: var(--c-bg); border-color: color-mix(in srgb, var(--c-body) 12%, transparent);"></div>
+        </div>
+
         <!-- View: READER -->
         <div id="view-reader" class="view-panel w-full h-full flex hidden overflow-hidden relative">
             <!-- Sidebar Drawer -->
-            <div id="reader-sidebar" class="sidebar absolute md:relative z-40 bg-surface-container-low border-r border-outline-variant h-full transform -translate-x-full md:translate-x-0 transition-transform duration-300 flex-shrink-0 w-3/4 md:w-[280px] flex flex-col md:hidden">
-                <div class="p-4 pb-[max(16px,env(safe-area-inset-bottom,16px))] flex flex-col h-full overflow-hidden">
+            <div id="reader-sidebar" class="sidebar absolute md:relative z-40 bg-surface-container-low border-r border-outline-variant h-[calc(var(--app-vh,100vh)-3rem)] md:h-full max-h-[calc(var(--app-vh,100vh)-3rem)] md:max-h-none overflow-hidden transform -translate-x-full md:translate-x-0 transition-transform duration-300 flex-shrink-0 w-[90vw] md:w-[360px] flex flex-col">
+                <div class="p-4 pb-[max(16px,env(safe-area-inset-bottom,16px))] flex flex-col h-full min-h-0 overflow-hidden">
                     <!-- Header with Home and Search -->
-                    <div class="flex items-center gap-2 mb-4 flex-shrink-0">
-                        <button id="sidebar-home-btn" class="h-8 w-8 flex-shrink-0 flex items-center justify-center btn-standard" title="Home">
+                    <div class="reader-sidebar-toolbar flex items-center flex-shrink-0">
+                        <button id="sidebar-home-btn" class="reader-sidebar-icon flex-shrink-0 flex items-center justify-center btn-standard" title="Home">
                             <span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">home</span>
                         </button>
-                        <div class="flex-grow flex items-center btn-standard h-8 px-2" style="justify-content: flex-start; cursor: text;">
+                        <div class="reader-search-shell flex-grow flex items-center btn-standard" style="justify-content: flex-start; cursor: text;">
                             <span class="material-symbols-outlined text-[14px]" style="color: var(--c-body); opacity: 0.5;">search</span>
                             <input type="text" id="sidebar-search" class="w-full bg-transparent border-none outline-none font-mono text-[12px] uppercase focus:ring-0 px-2 py-0" placeholder="SEARCH..." style="color: var(--c-body);">
                         </div>
-                        <button id="sidebar-config-btn" class="h-8 w-8 flex-shrink-0 flex items-center justify-center btn-standard" title="Configuration">
-                            <span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">settings</span>
+                        <button id="sidebar-folder-toggle" class="reader-sidebar-icon flex-shrink-0 flex items-center justify-center btn-standard" title="Expand folders" aria-label="Expand folders" aria-pressed="false">
+                            <span class="material-symbols-outlined text-[16px]" style="color: var(--c-body)">unfold_more</span>
                         </button>
                     </div>
 
@@ -164,8 +208,8 @@
                     </div>
                     
                     <!-- Sidebar New File Button -->
-                    <div class="mt-3 flex-shrink-0">
-                        <button id="sidebar-new-file" class="w-full px-3 py-2 flex items-center justify-center gap-1 mechanical-button rounded-sm text-[10px] font-bold uppercase hover:opacity-90" style="background-color: var(--c-accent); color: #fff;">
+                    <div class="reader-new-file-wrap flex-shrink-0">
+                        <button id="sidebar-new-file" class="w-full px-3 py-2 flex items-center justify-center gap-1 mechanical-button text-[10px] font-bold uppercase hover:opacity-90" style="background-color: var(--c-accent); color: #fff;">
                             <span class="material-symbols-outlined text-[14px]">add</span> NEW_FILE
                         </button>
                     </div>
@@ -177,49 +221,99 @@
             <div id="sidebar-overlay" class="hidden absolute inset-0 bg-black bg-opacity-50 z-30 transition-opacity md:hidden"></div>
 
             <!-- Editor / Preview Area -->
-            <div id="reading-area" class="flex-grow flex flex-col bg-surface-bright overflow-y-auto relative w-full h-full">
+            <div id="reading-area" class="flex-grow flex flex-col bg-surface-bright overflow-hidden relative w-full h-full">
+                <div id="binary-viewer" class="hidden flex-grow w-full h-full min-h-0 bg-surface-bright overflow-hidden"></div>
+                <div id="excalidraw-pane" class="hidden flex-grow w-full h-full min-h-0 bg-surface-bright"></div>
                 <!-- Editor Wrapper -->
-                <div id="editor-container" class="relative w-full max-w-[1000px] mx-auto bg-surface-bright pb-32 flex-grow h-auto min-h-full">
+                <div id="editor-container" class="relative w-full max-w-[1280px] mx-auto bg-surface-bright pb-32 flex-grow h-full min-h-0 overflow-hidden">
                     <!-- Backdrop pushes container height -->
-                    <div id="editor-backdrop" class="w-full p-4 md:p-8 whitespace-pre-wrap break-words font-mono-value text-[15px] leading-relaxed z-0 min-h-[500px]"></div>
+                    <div id="editor-backdrop" class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 md:p-8 whitespace-pre-wrap break-words font-mono-value text-[15px] leading-relaxed z-0"></div>
                     <!-- Textarea overlays exactly -->
-                    <textarea id="editor" class="absolute top-0 left-0 w-full h-full p-4 md:p-8 resize-none outline-none font-mono-value text-[15px] leading-relaxed bg-transparent z-10 border-none caret-brand-orange overflow-hidden" spellcheck="false" placeholder="Select a file to edit..."></textarea>
+                    <textarea id="editor" class="absolute inset-0 w-full h-full p-4 md:p-8 resize-none outline-none font-mono-value text-[15px] leading-relaxed bg-transparent z-10 border-none caret-brand-orange overflow-y-auto overflow-x-hidden" spellcheck="false" placeholder="Select a file to edit..."></textarea>
                 </div>
-                
-                <div id="preview-pane" class="overflow-y-auto p-4 md:p-8 hidden font-mono-value text-[15px] leading-relaxed bg-surface-bright text-zinc-900 min-h-full max-w-[1000px] mx-auto w-full pb-32">
-                    <!-- Preview content -->
+                <div id="preview-pane" class="overflow-y-auto flex-grow min-h-0 p-4 md:p-8 hidden font-mono-value text-[15px] leading-relaxed bg-surface-bright text-zinc-900 max-w-[1280px] mx-auto w-full pb-32">
+                    <!-- Preview content + inline metadata -->
                 </div>
             </div>
         </div>
 
         <!-- View: CONFIG -->
-        <div id="view-config" class="view-panel w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[800px] mx-auto hidden">
-            <h2 class="font-mono-value text-2xl font-bold mb-6 uppercase tracking-tighter pb-2" style="color: var(--c-body); border-bottom: 1px solid color-mix(in srgb, var(--c-body) 15%, transparent);">Configuration</h2>
-            <div class="border p-6 shadow-sm mb-6" style="background-color: var(--c-sidebar); border-color: color-mix(in srgb, var(--c-body) 12%, transparent);">
-                <p class="font-mono text-sm mb-6 pb-4" style="color: var(--c-body); opacity: 0.6; border-bottom: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">Adjust visual settings for the interface and reader.</p>
-                
-                <div class="space-y-6">
-                    <div class="flex items-center justify-between">
-                        <span class="font-mono-label text-xs uppercase font-bold" style="color: var(--c-body);">Active Vault</span>
-                        <select id="config-vault" class="config-select">
-                        </select>
+        <div id="view-config" class="view-panel w-full p-4 md:px-8 overflow-y-auto h-full pb-20 max-w-[960px] mx-auto hidden">
+            <h2 class="config-title">Settings</h2>
+            <div class="config-shell mb-6">
+                <div class="config-intro">
+                    <span class="module-led"></span>
+                    <div>
+                        <p class="config-kicker">MDVR WORKBENCH</p>
+                        <p class="config-copy">Choose one vault, tune the editor surface, and keep the color model small enough to reason about.</p>
                     </div>
+                </div>
 
-                    <div class="flex items-center justify-between">
-                        <span class="font-mono-label text-xs uppercase font-bold" style="color: var(--c-body);">Theme Palette</span>
+                <div class="config-section">
+                    <div class="config-section-head">
+                        <div>
+                            <h3>Vault</h3>
+                            <p>Select one vault for a flat tree, or multiple vaults for combined Home search. Rename display labels locally.</p>
+                        </div>
+                        <select id="config-vault" class="config-select hidden" aria-label="Active vault"></select>
+                    </div>
+                    <div id="config-vault-options" class="vault-options" role="group" aria-label="Selected vaults"></div>
+                    <p id="config-vault-fallback" class="config-note hidden"></p>
+                </div>
+
+                <div class="config-section">
+                    <div class="config-section-head">
+                        <div>
+                            <h3>Theme Palette</h3>
+                            <p>VS Code-style token set: workbench, text, side bar, accent, heading, code background, code text.</p>
+                        </div>
                         <select id="config-theme" class="config-select">
-                            <option value="light">Light (K.O.II)</option>
-                            <option value="neon">Neon Cyberpunk</option>
+                            <option value="light">MDVR Light</option>
+                            <option value="obsidian">Obsidian</option>
                             <option value="vscode">VS Code Dark+</option>
                             <option value="github">GitHub Light</option>
                             <option value="monokai">Monokai</option>
                             <option value="solarized">Solarized Dark</option>
                             <option value="dracula">Dracula</option>
+                            <option value="neon">Neon Cyberpunk</option>
                         </select>
                     </div>
+                    <div id="config-palette-preview" class="palette-preview" aria-hidden="true"></div>
+                    <div class="color-token-grid">
+                        <label class="color-token">
+                            <span><strong>Workbench</strong><small>editor.background</small></span>
+                            <input type="color" id="config-color-bg" value="#ffffff">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Text</strong><small>editor.foreground</small></span>
+                            <input type="color" id="config-color-body" value="#1a1c1c">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Side Bar</strong><small>sideBar.background</small></span>
+                            <input type="color" id="config-color-sidebar" value="#f5f5f5">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Accent</strong><small>focusBorder / button.background</small></span>
+                            <input type="color" id="config-color-accent" value="#ff5c00">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Heading</strong><small>markdown.headingForeground</small></span>
+                            <input type="color" id="config-color-header" value="#ff5c00">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Code Surface</strong><small>textCodeBlock.background</small></span>
+                            <input type="color" id="config-color-codebg" value="#e4e4e7">
+                        </label>
+                        <label class="color-token">
+                            <span><strong>Code Text</strong><small>editorString.foreground</small></span>
+                            <input type="color" id="config-color-codetext" value="#e01e5a">
+                        </label>
+                    </div>
+                </div>
 
-                    <div class="flex items-center justify-between">
-                        <span class="font-mono-label text-xs uppercase font-bold" style="color: var(--c-body);">Typography / Font</span>
+                <div class="config-section config-section-compact">
+                    <div class="setting-row">
+                        <span><strong>Typography</strong><small>Reader/editor font family</small></span>
                         <select id="config-font" class="config-select">
                             <option value="font-mono-value">JetBrains Mono (Default)</option>
                             <option value="font-sans">Space Grotesk</option>
@@ -230,9 +324,8 @@
                             <option value="font-roboto">Roboto Mono</option>
                         </select>
                     </div>
-
-                    <div class="flex items-center justify-between pb-6" style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                        <span class="font-mono-label text-xs uppercase font-bold" style="color: var(--c-body);">Text Size</span>
+                    <div class="setting-row">
+                        <span><strong>Text Size</strong><small>Reader/editor base size</small></span>
                         <select id="config-size" class="config-select">
                             <option value="10px">Extra Small (10px)</option>
                             <option value="12px">Small (12px)</option>
@@ -240,41 +333,6 @@
                             <option value="16px">Large (16px)</option>
                             <option value="18px">Extra Large (18px)</option>
                         </select>
-                    </div>
-
-                    <!-- Simplified Color Model (VS Code / Obsidian style) -->
-                    <div>
-                        <h3 class="font-mono-label text-xs uppercase font-bold mb-4" style="color: var(--c-body);">Colors</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Background</span>
-                                <input type="color" id="config-color-bg" value="#ffffff" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Text</span>
-                                <input type="color" id="config-color-body" value="#1a1c1c" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Sidebar / Menu</span>
-                                <input type="color" id="config-color-sidebar" value="#f5f5f5" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Accent</span>
-                                <input type="color" id="config-color-accent" value="#ff5c00" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Headings</span>
-                                <input type="color" id="config-color-header" value="#ff5c00" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Code Background</span>
-                                <input type="color" id="config-color-codebg" value="#e4e4e7" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                            <div class="flex items-center justify-between p-2 rounded-sm" style="background-color: color-mix(in srgb, var(--c-body) 5%, var(--c-bg)); border: 1px solid color-mix(in srgb, var(--c-body) 10%, transparent);">
-                                <span class="font-mono text-[11px]" style="color: var(--c-body); opacity: 0.7;">Code Text</span>
-                                <input type="color" id="config-color-codetext" value="#e01e5a" class="w-6 h-6 border-none p-0 cursor-pointer bg-transparent">
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -290,13 +348,25 @@
         </div>
     </main>
 
+    <input id="home-upload-input" class="hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple>
+    <input id="media-upload-input" class="hidden" type="file" accept="image/*,application/pdf" multiple>
+
     <!-- Context Menu -->
     <div id="context-menu" class="hidden fixed shadow-lg py-1 z-[100] min-w-[160px] font-mono-label text-[11px] rounded-sm uppercase" style="background-color: var(--c-sidebar); border: 1px solid color-mix(in srgb, var(--c-body) 15%, transparent);">
         <button id="cm-open" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">open_in_new</span> Open</button>
+        <button id="cm-download" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">download</span> Download</button>
         <button id="cm-rename" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">edit</span> Rename / Move</button>
         <button id="cm-new-here" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">note_add</span> New File Here</button>
-        <div style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent); margin: 4px 0;"></div>
+        <div id="cm-delete-divider" class="hidden" style="border-bottom: 1px solid color-mix(in srgb, var(--c-body) 12%, transparent); margin: 4px 0;"></div>
         <button id="cm-delete" class="w-full text-left px-4 py-2 flex items-center gap-2 text-red-500"><span class="material-symbols-outlined text-[14px]">delete</span> Delete</button>
+    </div>
+
+    <!-- Reader Context Menu -->
+    <div id="reader-context-menu" class="hidden fixed shadow-lg py-1 z-[100] min-w-[190px] font-mono-label text-[11px] rounded-sm uppercase" style="background-color: var(--c-sidebar); border: 1px solid color-mix(in srgb, var(--c-body) 15%, transparent);">
+        <button id="reader-cm-toggle-view" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">visibility</span> <span data-reader-toggle-label>View / Edit</span></button>
+        <button id="reader-cm-font-inc" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">text_increase</span> Increase Font</button>
+        <button id="reader-cm-font-dec" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">text_decrease</span> Decrease Font</button>
+        <button id="reader-cm-attach-media" class="w-full text-left px-4 py-2 flex items-center gap-2" style="color: var(--c-body);"><span class="material-symbols-outlined text-[14px]">attach_file_add</span> Add Media</button>
     </div>
 
     <!-- New File Modal -->
@@ -327,6 +397,6 @@
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="/app.js?v=20260604-mobile-header"></script>
 </body>
 </html>

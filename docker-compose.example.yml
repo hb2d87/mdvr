@@ -1,0 +1,34 @@
+services:
+  mdvr:
+    container_name: mdvr
+    build:
+      context: .
+    ports:
+      - "8088:8080"
+    volumes:
+      # Safe test vault first. mdvr.yaml makes this one writable/deletable.
+      - ./welcome-vault:/app/welcome-vault
+
+      # Obsidian vault starts read-only.
+      # Put MDVR_OBSIDIAN_VAULT=/absolute/path/to/your/vault in .env.
+      - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
+
+      # Write-enabled Obsidian vault example:
+      # - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian
+      #
+      # Also edit mdvr.yaml:
+      # vaults:
+      #   - id: obsidian
+      #     mode: read-write
+      #
+      # Auth is on by default. Change the password before exposing mdvr.
+      # MDVR_AUTH_PASSWORD=replace-with-a-long-secret
+      - ./mdvr.yaml:/app/mdvr.yaml:ro
+    environment:
+      MDVR_CONFIG_FILE: /app/mdvr.yaml
+      MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}
+      MDVR_AUTH_USER: ${MDVR_AUTH_USER:-mdvr}
+      MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}
+      MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
+      MDVR_AUTH_FILE: /run/mdvr.htpasswd
+    restart: unless-stopped
