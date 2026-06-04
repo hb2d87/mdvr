@@ -1,17 +1,9 @@
 app:
   name: MDVR
   description: Browser reader for markdown vaults
-
 server:
   unknown_keys: fail
   write_without_auth: warn
-  auth:
-    enabled: true
-    realm: MDVR
-    user: mdvr
-    password: change-me
-    file: /run/mdvr.htpasswd
-
 defaults:
   mode: read-only
   permissions:
@@ -36,18 +28,20 @@ defaults:
       - .md
       - .excalidraw
       - .txt
-
 vaults:
+  # These are settings overlays for mounted /vaults/<id> directories.
+  # Docker Compose controls which vaults actually exist.
   - id: demo
     name: Demo test vault
-    description: Internal vault for verifying MDVR write actions before mounting notes.
-    path: /app/welcome-vault
+    path: /vaults/demo
     mode: read-write
+    description: Internal vault for verifying MDVR write actions before mounting notes.
     permissions:
       delete: true
-
   - id: obsidian
     name: Obsidian
-    description: Optional host Obsidian vault mount. Read-only for safety.
     path: /vaults/obsidian
     mode: read-only
+    description: Optional host Obsidian vault mount. Read-only for safety.
+    permissions:
+      delete: false

@@ -4,7 +4,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, Field, validator
 from typing import Any, List, Set, Dict, Tuple, Optional
 import os
 import re
@@ -20,6 +20,7 @@ import tempfile
 import time
 import base64
 import binascii
+import errno
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -55,6 +56,7 @@ PERMISSION_KEYS = {
     "read", "edit", "new_files", "rename", "delete", "hide_read",
     "files_format_read", "files_format_edit", "files_format_new",
 }
+DEFAULT_VAULT_ROOTS = "/vaults"
 MODE_PERMISSIONS: Dict[str, Dict[str, Any]] = {
     "read-only": {
         "read": True,
@@ -90,6 +92,15 @@ MODE_PERMISSIONS: Dict[str, Dict[str, Any]] = {
         "files_format_new": [".md", ".markdown", ".excalidraw", ".txt"],
     },
 }
+
+
+class IndentedSafeDumper(yaml.SafeDumper):
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
+def dump_mdvr_yaml(data: Dict[str, Any]) -> str:
+    return yaml.dump(data, Dumper=IndentedSafeDumper, sort_keys=False, allow_unicode=False)
 
 
 def invalidate_vault_caches() -> None:
@@ -141,6 +152,30 @@ class AssetUploadRequest(BaseModel):
 class RenameRequest(BaseModel):
     old_path: str
     new_path: str
+
+
+class ConfigVaultRequest(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    path: str
+    mode: str = "read-only"
+    permissions: Dict[str, Any] = Field(default_factory=dict)
+
+
+class VaultConfigUpdateRequest(BaseModel):
+    vaults: List[ConfigVaultRequest]
+
+
+class ConfigTextUpdateRequest(BaseModel):
+    content: str
+
+    @validator("content")
+    def config_size(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 512 * 1024:
+            raise ValueError("Config content is too large")
+        return value
+
 
 class VaultEventHandler(FileSystemEventHandler):
     """Watches the vault directory and pushes change events to all WS clients."""
@@ -348,6 +383,68 @@ def _get_vault_base_path() -> str:
     return os.path.realpath(os.environ.get("MDVR_VAULT_PATH", os.environ.get("VAULT_PATH", "/vault")))
 
 
+def _configured_vault_roots() -> List[str]:
+    raw = os.environ.get("MDVR_VAULT_ROOTS", DEFAULT_VAULT_ROOTS)
+    roots: List[str] = []
+    for chunk in re.split(r"[\n,]+", raw or ""):
+        root = chunk.strip()
+        if not root:
+            continue
+        if not os.path.isabs(root):
+            logger.warning("Ignoring relative MDVR_VAULT_ROOTS entry: %s", root)
+            continue
+        roots.append(os.path.realpath(root))
+    return roots
+
+
+def _vault_id_from_dir_name(name: str, fallback: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-_")
+    if not slug or not VAULT_ID_RE.match(slug):
+        slug = fallback
+    return slug
+
+
+def discover_mounted_vaults() -> List[Dict[str, Any]]:
+    """Discover vaults from directories mounted under MDVR_VAULT_ROOTS."""
+    discovered: List[Dict[str, Any]] = []
+    seen_paths: Set[str] = set()
+    seen_ids: Set[str] = set()
+
+    for root in _configured_vault_roots():
+        if not os.path.isdir(root):
+            continue
+        try:
+            names = sorted(os.listdir(root))
+        except OSError as exc:
+            logger.warning("Unable to list MDVR vault root %s: %s", root, exc)
+            continue
+        for name in names:
+            if not is_visible_dir(name):
+                continue
+            path = os.path.realpath(os.path.join(root, name))
+            if path in seen_paths or not os.path.isdir(path):
+                continue
+            base_id = _vault_id_from_dir_name(name, f"vault-{len(discovered) + 1}")
+            vault_id = base_id
+            suffix = 2
+            while vault_id in seen_ids:
+                vault_id = f"{base_id}-{suffix}"
+                suffix += 1
+            discovered.append({
+                "id": vault_id,
+                "name": name.replace("-", " ").replace("_", " ").title() if name else vault_id,
+                "description": "",
+                "path": path,
+                "mode": "read-only",
+                "permissions": {},
+                "source": "volume",
+            })
+            seen_ids.add(vault_id)
+            seen_paths.add(path)
+
+    return discovered
+
+
 def _parse_vault_entries(raw: str) -> List[Tuple[str, str]]:
     entries: List[Tuple[str, str]] = []
     for chunk in re.split(r"[\n,]+", raw or ""):
@@ -372,22 +469,24 @@ def build_vault_options() -> List[Dict[str, str]]:
             return [dict(option) for option in vault_options_cache]
 
     config = load_mdvr_config()
-    configured_vaults = config.get("vaults") if isinstance(config, dict) else None
+    configured_vaults = effective_config_vaults(config) if isinstance(config, dict) else None
     if isinstance(configured_vaults, list) and configured_vaults:
-        options = [
-            {
-                "value": str(vault["id"]),
-                "id": str(vault["id"]),
-                "label": str(vault.get("name") or vault["id"]),
-                "name": str(vault.get("name") or vault["id"]),
-                "description": str(vault.get("description") or ""),
-                "path": str(vault["path"]),
-                "mode": str(vault.get("mode", "")),
-                "source": "configured",
-                "available": os.path.isdir(str(vault["path"])),
-            }
-            for vault in configured_vaults
-        ]
+        options = []
+        for vault in configured_vaults:
+            public = _public_config_vault(vault)
+            options.append({
+                "value": public["id"],
+                "id": public["id"],
+                "label": public["name"] or public["id"],
+                "name": public["name"] or public["id"],
+                "description": public["description"],
+                "path": public["path"],
+                "mode": public["mode"],
+                "source": str(vault.get("source", "volume")),
+                "available": public["available"],
+                "status": public["status"],
+                "error": public["error"],
+            })
         with cache_lock:
             vault_options_cache = [dict(option) for option in options]
         return options
@@ -752,6 +851,17 @@ def get_mdvr_config_file() -> str:
     return os.path.realpath(os.environ.get('MDVR_CONFIG_FILE', '/app/mdvr.yaml'))
 
 
+def load_raw_mdvr_config() -> Dict[str, Any]:
+    config_path = get_mdvr_config_file()
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"MDVR config file not found: {config_path}")
+    with open(config_path, 'r', encoding='utf-8') as handle:
+        loaded = yaml.safe_load(handle)
+    if not isinstance(loaded, dict):
+        raise ValueError("MDVR config root must be a mapping")
+    return loaded
+
+
 def load_mdvr_config() -> Dict:
     global mdvr_config_cache
     config_path = get_mdvr_config_file()
@@ -783,6 +893,265 @@ def load_mdvr_config() -> Dict:
     with cache_lock:
         mdvr_config_cache = (config_path, mtime, data)
     return data
+
+
+def _is_config_file_writable(config_path: str) -> bool:
+    if os.path.exists(config_path):
+        return os.access(config_path, os.W_OK)
+    parent = os.path.dirname(config_path) or "."
+    return os.access(parent, os.W_OK)
+
+
+def _is_path_under_root(path: str, root: str) -> bool:
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    return real_path == real_root or real_path.startswith(real_root.rstrip(os.sep) + os.sep)
+
+
+def _public_config_vault(vault: Dict[str, Any]) -> Dict[str, Any]:
+    path = str(vault.get("path", ""))
+    resolved = vault.get("resolved_permissions", {}) if isinstance(vault.get("resolved_permissions"), dict) else {}
+    permissions = vault.get("permissions", {}) if isinstance(vault.get("permissions"), dict) else {}
+    exists = os.path.exists(path)
+    is_dir = os.path.isdir(path)
+    readable = is_dir and os.access(path, os.R_OK)
+    writable = is_dir and os.access(path, os.W_OK)
+    parent = os.path.dirname(path.rstrip(os.sep)) or os.sep
+    parent_exists = os.path.isdir(parent)
+    parent_writable = parent_exists and os.access(parent, os.W_OK)
+    status = "ready" if readable else "missing" if not exists else "error"
+    error = ""
+    if not exists:
+        error = "Configured path does not exist inside the container."
+    elif not is_dir:
+        error = "Configured path exists but is not a directory."
+    elif not readable:
+        error = "Configured path is not readable by the container user."
+    return {
+        "id": str(vault.get("id", "")),
+        "name": str(vault.get("name", "")),
+        "description": str(vault.get("description", "")),
+        "path": path,
+        "mode": str(vault.get("mode", "read-only")),
+        "permissions": dict(permissions),
+        "resolved_permissions": dict(resolved),
+        "available": readable,
+        "status": status,
+        "error": error,
+        "path_exists": exists,
+        "path_writable": writable,
+        "parent_exists": parent_exists,
+        "parent_writable": parent_writable,
+    }
+
+
+def _vault_settings_by_id(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    settings: Dict[str, Dict[str, Any]] = {}
+    for vault in config.get("vaults", []):
+        if isinstance(vault, dict):
+            vault_id = str(vault.get("id", "")).strip()
+            if vault_id:
+                settings[vault_id] = vault
+    return settings
+
+
+def _vault_settings_by_path(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    settings: Dict[str, Dict[str, Any]] = {}
+    for vault in config.get("vaults", []):
+        if isinstance(vault, dict) and vault.get("path"):
+            settings[os.path.realpath(os.path.expanduser(str(vault["path"])))] = vault
+    return settings
+
+
+def _resolve_vault_permissions(default_permissions: Dict[str, Any], mode: str, override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    permissions = dict(default_permissions)
+    for key in ("read", "edit", "new_files", "rename", "delete", "hide_read"):
+        permissions[key] = MODE_PERMISSIONS[mode][key]
+    permissions = _merge_permissions(permissions, override)
+    _validate_permission_subsets(permissions, "vault.permissions")
+    return permissions
+
+
+def _apply_vault_settings(discovered: Dict[str, Any], settings: Optional[Dict[str, Any]], default_mode: str, default_permissions: Dict[str, Any]) -> Dict[str, Any]:
+    settings = settings or {}
+    mode = str(settings.get("mode", discovered.get("mode", default_mode))).strip() or default_mode
+    if mode not in MODE_PERMISSIONS:
+        raise ValueError(f"Unknown mode for vault {discovered.get('id')}: {mode}")
+    permissions = _resolve_vault_permissions(default_permissions, mode, settings.get("permissions") if isinstance(settings.get("permissions"), dict) else None)
+    if permissions.get("delete"):
+        logger.warning("MDVR vault %s has delete enabled; deletes are soft-delete moves to .mdvr-trash.", discovered.get("id"))
+    merged = dict(discovered)
+    merged["id"] = str(discovered.get("id", "")).strip()
+    merged["name"] = str(settings.get("name") or discovered.get("name") or merged["id"])
+    merged["description"] = str(settings.get("description") or discovered.get("description") or "")
+    merged["path"] = os.path.realpath(os.path.expanduser(str(discovered.get("path", ""))))
+    merged["mode"] = mode
+    merged["permissions"] = dict(settings.get("permissions", {})) if isinstance(settings.get("permissions"), dict) else {}
+    merged["resolved_permissions"] = permissions
+    return merged
+
+
+def effective_config_vaults(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return mounted Docker volumes with mdvr.yaml settings applied."""
+    defaults_config = config.get("defaults") if isinstance(config.get("defaults"), dict) else {}
+    default_mode = str(defaults_config.get("mode", "read-only")).strip()
+    default_permissions = defaults_config.get("permissions", MODE_PERMISSIONS["read-only"])
+    by_id = _vault_settings_by_id(config)
+    by_path = _vault_settings_by_path(config)
+
+    discovered = discover_mounted_vaults()
+    if discovered:
+        effective: List[Dict[str, Any]] = []
+        for vault in discovered:
+            settings = by_id.get(str(vault["id"])) or by_path.get(os.path.realpath(str(vault["path"])))
+            effective.append(_apply_vault_settings(vault, settings, default_mode, default_permissions))
+        return effective
+
+    # Local/dev fallback: when there is no configured mounted root, use the YAML
+    # list as the registry so tests and non-Docker runs keep working.
+    return [dict(vault) for vault in config.get("vaults", []) if isinstance(vault, dict)]
+
+
+def _clean_config_vault(vault: ConfigVaultRequest) -> Dict[str, Any]:
+    raw_permissions = vault.permissions or {}
+    permissions: Dict[str, Any] = {}
+    for key in ("read", "edit", "new_files", "rename", "delete", "hide_read"):
+        if key in raw_permissions:
+            permissions[key] = bool(raw_permissions.get(key))
+    for key in ("files_format_read", "files_format_edit", "files_format_new"):
+        if key in raw_permissions:
+            permissions[key] = _normalize_permission_formats(raw_permissions.get(key))
+
+    cleaned: Dict[str, Any] = {
+        "id": vault.id.strip(),
+        "name": vault.name.strip() or vault.id.strip(),
+        "path": vault.path.strip(),
+        "mode": vault.mode.strip() or "read-only",
+    }
+    description = vault.description.strip()
+    if description:
+        cleaned["description"] = description
+    if permissions:
+        cleaned["permissions"] = permissions
+    return cleaned
+
+
+def _write_mdvr_config_text(config_path: str, content: str) -> None:
+    parent = os.path.dirname(config_path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".mdvr-config-", suffix=".yaml", dir=parent)
+    text = content if not content or content.endswith("\n") else f"{content}\n"
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        try:
+            os.replace(tmp_path, config_path)
+        except OSError as exc:
+            if exc.errno not in {errno.EBUSY, errno.EXDEV}:
+                raise
+            # Docker bind-mounted single files can reject atomic replacement.
+            # Validation already happened before this helper is called, so fall
+            # back to updating the mounted file in place.
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.unlink(tmp_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def write_mdvr_vault_config(vaults: List[ConfigVaultRequest]) -> Dict[str, Any]:
+    config_path = get_mdvr_config_file()
+    raw_config = load_raw_mdvr_config()
+    next_config = dict(raw_config)
+    next_config["vaults"] = [_clean_config_vault(vault) for vault in vaults]
+
+    # Validate the full resulting file before it touches disk.
+    normalized = validate_mdvr_config(next_config)
+
+    _write_mdvr_config_text(config_path, dump_mdvr_yaml(next_config))
+    invalidate_vault_caches()
+    return normalized
+
+
+def _find_raw_vault_index(raw_config: Dict[str, Any], vault_id: str) -> int:
+    raw_vaults = raw_config.get("vaults", [])
+    if not isinstance(raw_vaults, list):
+        raise ValueError("MDVR config vaults must be a list")
+    for index, vault in enumerate(raw_vaults):
+        if isinstance(vault, dict) and str(vault.get("id", "")).strip() == vault_id:
+            return index
+    raise KeyError(vault_id)
+
+
+def write_mdvr_single_vault_config(vault_id: str, vault_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(vault_config, dict):
+        raise ValueError("Vault config must be a mapping")
+    config_path = get_mdvr_config_file()
+    raw_config = load_raw_mdvr_config()
+    next_config = dict(raw_config)
+    next_vaults = list(raw_config.get("vaults", []))
+    try:
+        index = _find_raw_vault_index(raw_config, vault_id)
+        next_vaults[index] = dict(vault_config)
+    except KeyError:
+        next_vaults.append(dict(vault_config))
+    next_config["vaults"] = next_vaults
+    normalized = validate_mdvr_config(next_config)
+    _write_mdvr_config_text(config_path, dump_mdvr_yaml(next_config))
+    invalidate_vault_caches()
+    return normalized
+
+
+def remove_mdvr_vault_config(vault_id: str) -> Dict[str, Any]:
+    config_path = get_mdvr_config_file()
+    raw_config = load_raw_mdvr_config()
+    index = _find_raw_vault_index(raw_config, vault_id)
+    raw_vaults = list(raw_config.get("vaults", []))
+    next_config = dict(raw_config)
+    next_config["vaults"] = raw_vaults[:index] + raw_vaults[index + 1:]
+    normalized = validate_mdvr_config(next_config)
+    _write_mdvr_config_text(config_path, dump_mdvr_yaml(next_config))
+    invalidate_vault_caches()
+    return normalized
+
+
+def single_vault_yaml_help() -> str:
+    return """# Edit this vault only.
+# Common modes:
+#   mode: read-only    # read files, no writes
+#   mode: read-write   # create/edit/rename, no delete by default
+#   mode: admin        # create/edit/rename/delete if Docker mount allows it
+#
+# Docker mount still wins:
+#   /host/vault:/vaults/main:ro  -> read-only even if mode is read-write
+#   /host/vault:/vaults/main     -> writable if mode allows it
+#
+# Optional permissions:
+#   permissions:
+#     delete: false
+#     files_format_read: [.md, .excalidraw, .txt, .png, .jpg, .pdf]
+#     files_format_edit: [.md, .excalidraw, .txt]
+#     files_format_new: [.md, .excalidraw, .txt]
+#
+"""
+
+
+def write_mdvr_config_text(content: str) -> Dict[str, Any]:
+    config_path = get_mdvr_config_file()
+    try:
+        loaded = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("MDVR config root must be a mapping")
+    normalized = validate_mdvr_config(loaded)
+    _write_mdvr_config_text(config_path, content)
+    invalidate_vault_caches()
+    return normalized
 
 
 def _unknown_policy(config: Dict[str, Any]) -> str:
@@ -893,8 +1262,8 @@ def validate_mdvr_config(config: Dict[str, Any]) -> Dict[str, Any]:
     _validate_permission_subsets(default_permissions, "defaults.permissions")
 
     raw_vaults = config.get("vaults", [])
-    if not isinstance(raw_vaults, list) or not raw_vaults:
-        raise ValueError("MDVR config requires at least one vault")
+    if not isinstance(raw_vaults, list):
+        raise ValueError("MDVR config vaults must be a list")
 
     seen_ids: Set[str] = set()
     seen_paths: Set[str] = set()
@@ -955,7 +1324,7 @@ def validate_mdvr_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _resolve_config_vault_entry(active_vault: str, config: Dict) -> Optional[Dict]:
-    vaults = config.get('vaults') if isinstance(config, dict) else None
+    vaults = effective_config_vaults(config) if isinstance(config, dict) else None
     if not isinstance(vaults, list):
         return None
     active_real = os.path.realpath(active_vault)
@@ -1168,9 +1537,200 @@ def api_vaults():
                 "mode": option.get("mode", ""),
                 "source": option.get("source", "configured"),
                 "available": bool(option.get("available", True)),
+                "status": option.get("status", "ready" if option.get("available", True) else "missing"),
+                "error": option.get("error", ""),
             }
             for option in options
         ]
+    }
+
+
+@app.get("/api/admin/vault-config")
+def api_admin_vault_config():
+    config_path = get_mdvr_config_file()
+    try:
+        config = load_mdvr_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "config_file": config_path,
+        "writable": _is_config_file_writable(config_path),
+        "auth_enabled": _auth_enabled(config),
+        "modes": list(MODE_PERMISSIONS.keys()),
+        "vaults": [_public_config_vault(vault) for vault in effective_config_vaults(config)],
+    }
+
+
+@app.put("/api/admin/vault-config")
+def api_update_admin_vault_config(payload: VaultConfigUpdateRequest):
+    try:
+        current_config = load_mdvr_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not _auth_enabled(current_config):
+        raise HTTPException(status_code=403, detail="Config edits require MDVR auth to be enabled")
+    try:
+        next_config = write_mdvr_vault_config(payload.vaults)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"Config file is not writable: {get_mdvr_config_file()}") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to write config: {exc}") from exc
+    config_path = get_mdvr_config_file()
+    return {
+        "config_file": config_path,
+        "writable": _is_config_file_writable(config_path),
+        "auth_enabled": _auth_enabled(next_config),
+        "modes": list(MODE_PERMISSIONS.keys()),
+        "vaults": [_public_config_vault(vault) for vault in effective_config_vaults(next_config)],
+    }
+
+
+@app.get("/api/admin/vault-config/{vault_id}/text")
+def api_admin_single_vault_config_text(vault_id: str):
+    try:
+        raw_config = load_raw_mdvr_config()
+        try:
+            index = _find_raw_vault_index(raw_config, vault_id)
+            vault = raw_config["vaults"][index]
+        except KeyError:
+            config = load_mdvr_config()
+            vault = _resolve_config_vault_entry(vault_id, config)
+            if not vault:
+                raise KeyError(vault_id)
+            vault = {
+                "id": vault["id"],
+                "name": vault.get("name", vault["id"]),
+                "path": vault["path"],
+                "mode": vault.get("mode", "read-only"),
+                "description": vault.get("description", ""),
+                "permissions": vault.get("permissions", {}),
+            }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "config_file": get_mdvr_config_file(),
+        "writable": _is_config_file_writable(get_mdvr_config_file()),
+        "content": single_vault_yaml_help() + dump_mdvr_yaml(vault),
+    }
+
+
+@app.delete("/api/admin/vault-config/{vault_id}")
+def api_delete_admin_vault_config(vault_id: str):
+    try:
+        current_config = load_mdvr_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not _auth_enabled(current_config):
+        raise HTTPException(status_code=403, detail="Config edits require MDVR auth to be enabled")
+    try:
+        next_config = remove_mdvr_vault_config(vault_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"Config file is not writable: {get_mdvr_config_file()}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to write config: {exc}") from exc
+    return {
+        "config_file": get_mdvr_config_file(),
+        "writable": _is_config_file_writable(get_mdvr_config_file()),
+        "auth_enabled": _auth_enabled(next_config),
+        "modes": list(MODE_PERMISSIONS.keys()),
+        "vaults": [_public_config_vault(item) for item in effective_config_vaults(next_config)],
+    }
+
+
+@app.put("/api/admin/vault-config/{vault_id}/text")
+def api_update_admin_single_vault_config_text(vault_id: str, payload: ConfigTextUpdateRequest):
+    try:
+        current_config = load_mdvr_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not _auth_enabled(current_config):
+        raise HTTPException(status_code=403, detail="Config edits require MDVR auth to be enabled")
+    try:
+        loaded = yaml.safe_load(payload.content)
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {exc}") from exc
+    try:
+        next_config = write_mdvr_single_vault_config(vault_id, loaded)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"Config file is not writable: {get_mdvr_config_file()}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to write config: {exc}") from exc
+    saved = _resolve_config_vault_entry(str(loaded.get("id", vault_id)) if isinstance(loaded, dict) else vault_id, next_config) if isinstance(loaded, dict) else None
+    return {
+        "config_file": get_mdvr_config_file(),
+        "writable": _is_config_file_writable(get_mdvr_config_file()),
+        "auth_enabled": _auth_enabled(next_config),
+        "modes": list(MODE_PERMISSIONS.keys()),
+        "vault": _public_config_vault(saved) if saved else None,
+        "vaults": [_public_config_vault(vault) for vault in effective_config_vaults(next_config)],
+    }
+
+
+@app.get("/api/admin/config-text")
+def api_admin_config_text():
+    config_path = get_mdvr_config_file()
+    try:
+        with open(config_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to read config: {exc}") from exc
+    return {
+        "config_file": config_path,
+        "writable": _is_config_file_writable(config_path),
+        "content": content,
+    }
+
+
+@app.put("/api/admin/config-text")
+def api_update_admin_config_text(payload: ConfigTextUpdateRequest):
+    try:
+        current_config = load_mdvr_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not _auth_enabled(current_config):
+        raise HTTPException(status_code=403, detail="Config edits require MDVR auth to be enabled")
+    try:
+        next_config = write_mdvr_config_text(payload.content)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"Config file is not writable: {get_mdvr_config_file()}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to write config: {exc}") from exc
+    return {
+        "config_file": get_mdvr_config_file(),
+        "writable": _is_config_file_writable(get_mdvr_config_file()),
+        "auth_enabled": _auth_enabled(next_config),
+        "modes": list(MODE_PERMISSIONS.keys()),
+        "vaults": [_public_config_vault(vault) for vault in effective_config_vaults(next_config)],
     }
 
 

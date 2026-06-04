@@ -20,6 +20,14 @@ class ObsidianReader {
         this.vaultOptions = [];
         this.vaultAliases = this.getStoredVaultAliases();
         this.selectedVaultIds = this.getStoredSelectedVaultIds();
+        this.serverVaultConfig = null;
+        this.serverVaultConfigDirty = false;
+        this.advancedConfigLoaded = false;
+        this.advancedConfigDirty = false;
+        this.currentConfigVaultId = null;
+        this.singleVaultConfigDirty = false;
+        this.singleVaultAdvancedLoaded = false;
+        this.singleVaultAdvancedDirty = false;
         this.vaultPermissions = new Map();
         this.fileMetadataByPath = new Map();
         this.contextMenuVault = null;
@@ -83,6 +91,9 @@ class ObsidianReader {
                     } catch (_) {}
                 } else if (pathname === 'settings') {
                     return { path: '', vault, view: 'config' };
+                } else if (pathname === 'settings/vault' || pathname.startsWith('settings/vault/')) {
+                    const configVault = pathname.split('/').slice(2).join('/');
+                    return { path: '', vault, view: 'vault-config', configVault: this.normalizeVaultId(decodeURIComponent(configVault || '')) };
                 } else if (pathname === 'home') {
                     return { path: '', vault, view: 'home' };
                 } else {
@@ -110,8 +121,13 @@ class ObsidianReader {
         }
         if (route.view === 'config') {
             await this.switchView('config');
+            await this.loadAdminVaultConfig();
             this.populateConfigUI();
             if (options.replaceUrl) this.updateUrlForSettings({ replace: true });
+            return;
+        }
+        if (route.view === 'vault-config') {
+            await this.openVaultConfigPage(route.configVault || this.activeVault, { replaceUrl: options.replaceUrl === true });
             return;
         }
         if (route.path) {
@@ -888,6 +904,11 @@ class ObsidianReader {
         window.history[method]({}, '', '/settings');
     }
 
+    updateUrlForVaultSettings(vaultId, options = {}) {
+        const method = options.replace ? 'replaceState' : 'pushState';
+        window.history[method]({}, '', `/settings/vault/${this.encodePathSegments(vaultId || '')}`);
+    }
+
     setupViewportHeight() {
         const setVh = () => {
             const height = Math.round(window.visualViewport?.height || window.innerHeight);
@@ -991,6 +1012,7 @@ class ObsidianReader {
             document.getElementById('reader-sidebar').classList.add('-translate-x-full');
             document.getElementById('sidebar-overlay').classList.add('hidden');
             await this.switchView('config');
+            await this.loadAdminVaultConfig();
             this.populateConfigUI();
             this.updateUrlForSettings();
         };
@@ -1000,20 +1022,68 @@ class ObsidianReader {
             this.switchView('home');
             this.updateUrlForFile(null);
         });
+        document.getElementById('vault-config-back-btn')?.addEventListener('click', async () => {
+            await this.switchView('config');
+            await this.loadAdminVaultConfig();
+            this.populateConfigUI();
+            this.updateUrlForSettings();
+        });
+        document.getElementById('single-vault-cancel-btn')?.addEventListener('click', async () => {
+            await this.switchView('config');
+            await this.loadAdminVaultConfig();
+            this.populateConfigUI();
+            this.updateUrlForSettings();
+        });
+        document.getElementById('single-vault-save-btn')?.addEventListener('click', async () => {
+            try {
+                this.setSingleVaultConfigStatus('Saving vault config...', 'info');
+                await this.saveSingleVaultConfig();
+                await this.loadVaults();
+                await this.loadServerConfig();
+                await this.switchView('config');
+                await this.loadAdminVaultConfig();
+                this.populateConfigUI();
+                this.updateUrlForSettings();
+            } catch (error) {
+                const message = this.humanizeFetchError(error);
+                this.setSingleVaultConfigStatus(`Save failed: ${message}`, 'error');
+                this.setSingleVaultAdvancedStatus(`Save failed: ${message}`, 'error');
+            }
+        });
         document.getElementById('config-save-btn').addEventListener('click', async () => {
-            await this.saveConfig();
-            await this.switchView('home');
-            this.updateUrlForFile(null);
-            // Reload all content to reflect new vault
-            await this.loadVaultName();
-            await Promise.all([
-                this.loadRecentFiles(),
-                this.loadFileTree('file-tree')
-            ]);
+            try {
+                await this.saveConfig();
+                await this.switchView('home');
+                this.updateUrlForFile(null);
+                // Reload all content to reflect new vault
+                await this.loadVaults();
+                await this.loadVaultName();
+                await Promise.all([
+                    this.loadRecentFiles(),
+                    this.loadFileTree('file-tree')
+                ]);
+            } catch (error) {
+                const message = this.humanizeFetchError(error);
+                this.setServerConfigStatus(`Save failed: ${message}`, 'error');
+                this.setAdvancedConfigStatus(`Save failed: ${message}`, 'error');
+            }
         });
 
         // Theme presets
         document.getElementById('config-theme').addEventListener('change', (e) => this.applyThemePreset(e.target.value));
+        document.getElementById('config-add-vault-btn')?.addEventListener('click', () => this.addServerVaultConfigRow());
+        document.getElementById('server-vault-config-list')?.addEventListener('input', () => this.markServerVaultConfigDirty());
+        document.getElementById('server-vault-config-list')?.addEventListener('change', () => this.markServerVaultConfigDirty());
+        document.getElementById('advanced-config-toggle')?.addEventListener('click', () => this.toggleAdvancedConfig());
+        document.getElementById('single-vault-advanced-toggle')?.addEventListener('click', () => this.toggleSingleVaultAdvancedConfig());
+        document.getElementById('single-vault-advanced-text')?.addEventListener('input', () => {
+            this.singleVaultAdvancedDirty = true;
+            this.setSingleVaultAdvancedStatus('Advanced vault YAML changed. Save Vault to apply.', 'warn');
+        });
+        document.getElementById('advanced-config-text')?.addEventListener('input', () => {
+            this.advancedConfigDirty = true;
+            this.setAdvancedConfigStatus('Advanced YAML changed. Save Settings to apply.', 'warn');
+        });
         document.querySelectorAll('.color-token input[type="color"]').forEach(input => {
             input.addEventListener('input', () => this.syncPalettePreview());
         });
@@ -1122,6 +1192,9 @@ class ObsidianReader {
         document.getElementById('reader-cm-toggle-view').addEventListener('click', () => {
             if (this.viewMode === 'reader' && this.getViewerKind(this.currentFile) === 'text') this.togglePreview();
         });
+        document.getElementById('reader-cm-copy')?.addEventListener('click', () => this.copyEditorSelection());
+        document.getElementById('reader-cm-cut')?.addEventListener('click', () => this.cutEditorSelection());
+        document.getElementById('reader-cm-paste')?.addEventListener('click', () => this.pasteIntoEditor());
         document.getElementById('reader-cm-font-inc').addEventListener('click', () => this.adjustReaderFontSize(1));
         document.getElementById('reader-cm-font-dec').addEventListener('click', () => this.adjustReaderFontSize(-1));
         document.getElementById('reader-cm-attach-media').addEventListener('click', () => this.openMediaPicker());
@@ -1238,6 +1311,27 @@ class ObsidianReader {
             attachBtn.disabled = !canAttach;
         }
 
+        const editorActions = this.getEditorActionState();
+        const readerActions = this.getReaderCopyState();
+        const canCopy = editorActions.hasSelection || readerActions.hasSelection;
+        const editDivider = document.getElementById('reader-cm-edit-divider');
+        const copyBtn = document.getElementById('reader-cm-copy');
+        const cutBtn = document.getElementById('reader-cm-cut');
+        const pasteBtn = document.getElementById('reader-cm-paste');
+        if (editDivider) editDivider.classList.toggle('hidden', !editorActions.canEdit && !canCopy);
+        if (copyBtn) {
+            copyBtn.classList.toggle('hidden', !canCopy);
+            copyBtn.disabled = !canCopy;
+        }
+        if (cutBtn) {
+            cutBtn.classList.toggle('hidden', !editorActions.canEdit || !editorActions.hasSelection);
+            cutBtn.disabled = !editorActions.hasSelection;
+        }
+        if (pasteBtn) {
+            pasteBtn.classList.toggle('hidden', !editorActions.canEdit);
+            pasteBtn.disabled = !editorActions.canEdit;
+        }
+
         menu.classList.remove('hidden');
         const width = menu.offsetWidth || 190;
         const height = menu.offsetHeight || 160;
@@ -1245,6 +1339,108 @@ class ObsidianReader {
         const top = Math.min(y, window.scrollY + window.innerHeight - height - 8);
         menu.style.left = `${Math.max(8, left)}px`;
         menu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    getEditorActionState() {
+        const editor = document.getElementById('editor');
+        const canEdit = !!editor
+            && this.viewMode === 'reader'
+            && this.getViewerKind(this.currentFile) === 'text'
+            && !this.previewEnabled
+            && !editor.readOnly;
+        const start = editor?.selectionStart ?? 0;
+        const end = editor?.selectionEnd ?? 0;
+        return { editor, canEdit, hasSelection: canEdit && end > start, start, end };
+    }
+
+    getReaderCopyState() {
+        const previewPane = document.getElementById('preview-pane');
+        const selection = window.getSelection?.();
+        const text = String(selection?.toString() || '');
+        const anchor = selection?.anchorNode;
+        const focus = selection?.focusNode;
+        const containsSelection = !!previewPane
+            && !!text.trim()
+            && (
+                (anchor && previewPane.contains(anchor.nodeType === Node.ELEMENT_NODE ? anchor : anchor.parentNode))
+                || (focus && previewPane.contains(focus.nodeType === Node.ELEMENT_NODE ? focus : focus.parentNode))
+            );
+        return {
+            canCopy: this.viewMode === 'reader' && this.previewEnabled && containsSelection,
+            hasSelection: this.viewMode === 'reader' && this.previewEnabled && containsSelection,
+            text,
+        };
+    }
+
+    async writeClipboardText(text) {
+        if (!text) return false;
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (_) {}
+        const helper = document.createElement('textarea');
+        helper.value = text;
+        helper.setAttribute('readonly', '');
+        helper.style.position = 'fixed';
+        helper.style.opacity = '0';
+        document.body.appendChild(helper);
+        helper.select();
+        let copied = false;
+        try {
+            copied = document.execCommand('copy');
+        } catch (_) {
+            copied = false;
+        }
+        helper.remove();
+        return copied;
+    }
+
+    async readClipboardText() {
+        try {
+            if (navigator.clipboard?.readText) return await navigator.clipboard.readText();
+        } catch (_) {}
+        return '';
+    }
+
+    async copyEditorSelection() {
+        const state = this.getEditorActionState();
+        const reader = this.getReaderCopyState();
+        const text = state.hasSelection
+            ? state.editor.value.slice(state.start, state.end)
+            : reader.hasSelection ? reader.text : '';
+        if (!text) return;
+        await this.writeClipboardText(text);
+        if (state.editor && !this.previewEnabled) state.editor.focus();
+    }
+
+    async cutEditorSelection() {
+        const state = this.getEditorActionState();
+        if (!state.hasSelection) return;
+        const text = state.editor.value.slice(state.start, state.end);
+        await this.writeClipboardText(text);
+        state.editor.setRangeText('', state.start, state.end, 'start');
+        this.setDirty(true);
+        this.updateHighlighting();
+        if (this.previewEnabled) this.updatePreview();
+        state.editor.focus();
+    }
+
+    async pasteIntoEditor() {
+        const state = this.getEditorActionState();
+        if (!state.canEdit) return;
+        const text = await this.readClipboardText();
+        if (!text) {
+            this.updateStatus('Clipboard unavailable');
+            state.editor.focus();
+            return;
+        }
+        state.editor.setRangeText(text, state.start, state.end, 'end');
+        this.setDirty(true);
+        this.updateHighlighting();
+        if (this.previewEnabled) this.updatePreview();
+        state.editor.focus();
     }
 
     adjustReaderFontSize(direction) {
@@ -1350,7 +1546,7 @@ class ObsidianReader {
                     this.loadFileTree('file-tree')
                 ]);
                 this.setHomeUploadButton();
-            } else if (view === 'config') {
+            } else if (view === 'config' || view === 'vault-config') {
                 configBtn.classList.add('hidden');
             }
         }
@@ -1386,6 +1582,8 @@ class ObsidianReader {
                     source: v.source || 'configured',
                     mode: v.mode || '',
                     available: v.available !== false,
+                    status: v.status || (v.available === false ? 'missing' : 'ready'),
+                    error: v.error || '',
                 };
             });
             this.vaultOptions = configuredOptions;
@@ -1427,17 +1625,17 @@ class ObsidianReader {
         if (!container || !select) return;
         container.innerHTML = '';
         select.value = this.activeVault;
-        this.getReadableVaultOptions().forEach(option => {
+        this.vaultOptions.forEach(option => {
             const label = document.createElement('label');
             label.className = 'vault-option';
             label.dataset.available = String(option.available);
-            label.title = option.description || option.path || option.name;
+            label.title = option.error || option.description || option.path || option.name;
 
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.name = 'mdvr-vault';
             checkbox.value = option.id;
-            checkbox.checked = this.selectedVaultIds.includes(option.id);
+            checkbox.checked = option.available && this.selectedVaultIds.includes(option.id);
             checkbox.disabled = !option.available;
             checkbox.addEventListener('change', () => {
                 if (checkbox.disabled) return;
@@ -1456,40 +1654,476 @@ class ObsidianReader {
             });
 
             const body = document.createElement('div');
+            body.className = 'vault-option-body';
             const title = document.createElement('strong');
             title.textContent = this.vaultLabel(option.id);
-            const desc = document.createElement('p');
-            desc.textContent = option.description || (option.source === 'local' ? 'Local vault folder' : 'Configured vault');
-            const nameInput = document.createElement('input');
-            nameInput.type = 'text';
-            nameInput.className = 'vault-name-input';
-            nameInput.value = this.vaultAliases[option.id] || '';
-            nameInput.placeholder = option.originalName || option.name || option.id;
-            nameInput.setAttribute('aria-label', `Display name for ${option.id}`);
-            nameInput.addEventListener('click', event => event.stopPropagation());
-            nameInput.addEventListener('input', () => {
-                const value = nameInput.value.trim();
-                if (value) this.vaultAliases[option.id] = value;
-                else delete this.vaultAliases[option.id];
-                title.textContent = this.vaultLabel(option.id);
-            });
-            const path = document.createElement('code');
-            path.textContent = option.path || option.id;
-            body.append(title, desc, nameInput, path);
+            const statusLine = document.createElement('p');
+            const modeLabel = option.available ? (option.mode || 'ready') : (option.status || 'missing');
+            const details = option.available
+                ? option.description
+                : (option.error || option.description || 'Configured path is not available');
+            statusLine.textContent = `${modeLabel}${details ? ` · ${details}` : ''}`;
+            if (!option.available) statusLine.dataset.tone = 'error';
+            body.append(title, statusLine);
 
             const meta = document.createElement('div');
-            meta.className = 'flex flex-col items-end gap-1';
-            const source = document.createElement('span');
-            source.className = 'vault-source';
-            source.textContent = option.source || 'configured';
-            const status = document.createElement('span');
-            status.className = `vault-status ${option.available ? 'is-ok' : 'is-missing'}`;
-            status.textContent = option.available ? (option.mode || 'ready') : 'missing';
-            meta.append(source, status);
+            meta.className = 'vault-option-actions';
+            const configButton = document.createElement('button');
+            configButton.type = 'button';
+            configButton.className = 'vault-config-button';
+            configButton.title = `Configure ${this.vaultLabel(option.id)}`;
+            configButton.innerHTML = '<span class="material-symbols-outlined text-[18px]">tune</span>';
+            configButton.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                await this.openVaultConfigPage(option.id);
+            });
+            meta.append(configButton);
 
             label.append(checkbox, body, meta);
             container.appendChild(label);
         });
+    }
+
+    setServerConfigStatus(message, tone = 'info') {
+        const status = document.getElementById('server-config-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.dataset.tone = tone;
+    }
+
+    setAdvancedConfigStatus(message, tone = 'info') {
+        const status = document.getElementById('advanced-config-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.dataset.tone = tone;
+    }
+
+    setSingleVaultConfigStatus(message, tone = 'info') {
+        const status = document.getElementById('single-vault-config-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.dataset.tone = tone;
+    }
+
+    setSingleVaultAdvancedStatus(message, tone = 'info') {
+        const status = document.getElementById('single-vault-advanced-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.dataset.tone = tone;
+    }
+
+    async loadAdminVaultConfig() {
+        const list = document.getElementById('server-vault-config-list');
+        if (list) list.innerHTML = '';
+        this.setServerConfigStatus('Loading mdvr.yaml...', 'info');
+        try {
+            const response = await this.fetchApi('/api/admin/vault-config');
+            if (!response.ok) throw new Error(await response.text());
+            this.serverVaultConfig = await response.json();
+            this.serverVaultConfigDirty = false;
+            this.renderServerVaultConfig();
+        } catch (error) {
+            this.serverVaultConfig = null;
+            this.setServerConfigStatus(`Unable to load vault config: ${this.humanizeFetchError(error)}`, 'error');
+        }
+    }
+
+    humanizeFetchError(error) {
+        const raw = String(error?.message || error || '');
+        try {
+            const parsed = JSON.parse(raw);
+            return parsed.detail || raw;
+        } catch (_) {
+            return raw.replace(/^Error:\s*/, '') || 'unknown error';
+        }
+    }
+
+    renderServerVaultConfig() {
+        const list = document.getElementById('server-vault-config-list');
+        if (!list) return;
+        list.innerHTML = '';
+        const config = this.serverVaultConfig;
+        if (!config) return;
+        const vaults = config.vaults || [];
+        const path = config.config_file || 'mdvr.yaml';
+        const writable = config.writable ? 'writable' : 'read-only';
+        const auth = config.auth_enabled ? 'auth on' : 'auth off';
+        const tone = config.writable && config.auth_enabled ? 'ok' : 'warn';
+        this.setServerConfigStatus(`${path} · ${writable} · ${auth}`, tone);
+        vaults.forEach(vault => list.appendChild(this.createServerVaultConfigCard(vault)));
+        this.updateServerVaultRemoveButtons();
+    }
+
+    getServerVaultConfig(vaultId) {
+        const id = this.normalizeVaultId(vaultId);
+        return (this.serverVaultConfig?.vaults || []).find(vault => this.normalizeVaultId(vault.id) === id);
+    }
+
+    async openVaultConfigPage(vaultId, options = {}) {
+        await this.loadAdminVaultConfig();
+        const fallback = this.getReadableVaultOptions()[0]?.id || '';
+        this.currentConfigVaultId = this.normalizeVaultId(vaultId || fallback);
+        await this.switchView('vault-config');
+        this.renderSingleVaultConfigPage();
+        this.updateUrlForVaultSettings(this.currentConfigVaultId, { replace: options.replaceUrl === true });
+    }
+
+    renderSingleVaultConfigPage() {
+        const vault = this.getServerVaultConfig(this.currentConfigVaultId);
+        const container = document.getElementById('single-vault-config-card');
+        const title = document.getElementById('vault-config-title');
+        const subtitle = document.getElementById('vault-config-subtitle');
+        if (container) container.innerHTML = '';
+        this.singleVaultConfigDirty = false;
+        this.singleVaultAdvancedLoaded = false;
+        this.singleVaultAdvancedDirty = false;
+        const advancedText = document.getElementById('single-vault-advanced-text');
+        const advancedToggle = document.getElementById('single-vault-advanced-toggle');
+        if (advancedText) {
+            advancedText.value = '';
+            advancedText.classList.add('hidden');
+        }
+        if (advancedToggle) advancedToggle.textContent = 'Open YAML';
+
+        if (!vault) {
+            if (title) title.textContent = 'Vault Missing';
+            if (subtitle) subtitle.textContent = '';
+            this.setSingleVaultConfigStatus('Vault not found in mdvr.yaml.', 'error');
+            return;
+        }
+
+        if (title) title.textContent = vault.name || vault.id;
+        if (subtitle) subtitle.textContent = '';
+        this.setSingleVaultConfigStatus(`${this.serverVaultConfig?.config_file || 'mdvr.yaml'} · ${this.serverVaultConfig?.writable ? 'writable' : 'read-only'}`, this.serverVaultConfig?.writable ? 'ok' : 'warn');
+        this.setSingleVaultAdvancedStatus('', 'info');
+        if (container) {
+            container.appendChild(this.createServerVaultConfigCard(vault, { removable: false, single: true }));
+            container.appendChild(this.createSingleVaultActions(vault));
+        }
+    }
+
+    createSingleVaultActions(vault) {
+        const actions = document.createElement('div');
+        actions.className = 'single-vault-actions';
+        const hints = document.createElement('p');
+        hints.className = 'config-note';
+        hints.dataset.tone = vault.available ? 'ok' : 'error';
+        hints.textContent = vault.available ? 'Vault path is available.' : (vault.error || 'Vault path is not available.');
+        actions.appendChild(hints);
+
+        const buttons = document.createElement('div');
+        buttons.className = 'single-vault-action-buttons';
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'config-mini-button config-danger-button';
+        removeButton.textContent = 'Reset Settings';
+        removeButton.title = 'Remove this vault settings entry from mdvr.yaml. The mounted volume remains visible.';
+        removeButton.addEventListener('click', async () => this.removeCurrentVaultConfig(vault.id));
+        buttons.appendChild(removeButton);
+
+        actions.appendChild(buttons);
+        return actions;
+    }
+
+    createServerVaultConfigCard(vault = {}, options = {}) {
+        const card = document.createElement('div');
+        card.className = 'vault-config-card';
+        card._basePermissions = { ...(vault.permissions || {}) };
+
+        const effective = vault.resolved_permissions || {};
+        const status = vault.available ? 'ready' : 'missing';
+        const mode = vault.mode || 'read-only';
+        const deleteEnabled = Object.prototype.hasOwnProperty.call(card._basePermissions, 'delete')
+            ? !!card._basePermissions.delete
+            : !!effective.delete;
+        const headHtml = options.single ? '' : `
+            <div class="vault-config-card-head">
+                <div>
+                    <strong data-vault-title>${this.escapeHtml(vault.name || vault.id || 'Vault')}</strong>
+                    <p>${this.escapeHtml(vault.path || '')}</p>
+                </div>
+                <div class="vault-config-statuses">
+                    <span class="vault-status ${vault.available ? 'is-ok' : 'is-missing'}">${status}</span>
+                    <span class="vault-source">${this.escapeHtml(mode)}</span>
+                </div>
+            </div>
+        `;
+
+        card.innerHTML = `
+            ${headHtml}
+            <div class="vault-config-grid">
+                <label><span>ID</span><input data-vault-field="id" value="${this.escapeAttr(vault.id || '')}" placeholder="main"></label>
+                <label><span>Name</span><input data-vault-field="name" value="${this.escapeAttr(vault.name || '')}" placeholder="Main vault"></label>
+                <label class="vault-config-wide"><span>Path in container</span><input data-vault-field="path" value="${this.escapeAttr(vault.path || '')}" placeholder="/vaults/main"></label>
+                <label class="vault-config-wide"><span>Description</span><input data-vault-field="description" value="${this.escapeAttr(vault.description || '')}" placeholder="Optional note"></label>
+                <label><span>Mode</span><select data-vault-field="mode">
+                    ${this.configModeOptions(mode)}
+                </select></label>
+                <label class="vault-config-check"><input data-vault-field="delete" type="checkbox" ${deleteEnabled ? 'checked' : ''}><span>Allow soft delete</span></label>
+            </div>
+            <div class="vault-config-actions">
+                <button type="button" data-vault-action="remove" class="config-mini-button">Remove</button>
+            </div>
+        `;
+
+        const removeButton = card.querySelector('[data-vault-action="remove"]');
+        if (options.removable === false) {
+            removeButton?.remove();
+        } else {
+            removeButton?.addEventListener('click', () => {
+                card.remove();
+                this.markServerVaultConfigDirty();
+                this.updateServerVaultRemoveButtons();
+            });
+        }
+        card.querySelectorAll('input, select').forEach(input => {
+            input.addEventListener('input', () => options.single ? this.syncSingleVaultCard(card) : this.syncServerVaultCard(card));
+            input.addEventListener('change', () => options.single ? this.syncSingleVaultCard(card) : this.syncServerVaultCard(card));
+        });
+        return card;
+    }
+
+    configModeOptions(activeMode) {
+        const modes = this.serverVaultConfig?.modes || ['read-only', 'read-write', 'admin'];
+        return modes.map(mode => `<option value="${this.escapeAttr(mode)}" ${mode === activeMode ? 'selected' : ''}>${this.escapeHtml(mode)}</option>`).join('');
+    }
+
+    escapeAttr(value) {
+        return this.escapeHtml(value).replace(/`/g, '&#96;');
+    }
+
+    syncServerVaultCard(card) {
+        const title = card.querySelector('[data-vault-title]');
+        const name = card.querySelector('[data-vault-field="name"]')?.value?.trim();
+        const id = card.querySelector('[data-vault-field="id"]')?.value?.trim();
+        if (title) title.textContent = name || id || 'Vault';
+        this.markServerVaultConfigDirty();
+    }
+
+    syncSingleVaultCard(card) {
+        const title = card.querySelector('[data-vault-title]');
+        const pageTitle = document.getElementById('vault-config-title');
+        const subtitle = document.getElementById('vault-config-subtitle');
+        const name = card.querySelector('[data-vault-field="name"]')?.value?.trim();
+        const id = card.querySelector('[data-vault-field="id"]')?.value?.trim();
+        const mode = card.querySelector('[data-vault-field="mode"]')?.value || 'read-only';
+        const label = name || id || 'Vault';
+        if (title) title.textContent = label;
+        if (pageTitle) pageTitle.textContent = label;
+        if (subtitle) subtitle.textContent = '';
+        this.singleVaultConfigDirty = true;
+        this.setSingleVaultConfigStatus('Vault config changed. Save Vault to write mdvr.yaml.', 'warn');
+    }
+
+    markServerVaultConfigDirty() {
+        this.serverVaultConfigDirty = true;
+        this.setServerConfigStatus('Vault config changed. Save Settings to write mdvr.yaml.', 'warn');
+    }
+
+    updateServerVaultRemoveButtons() {
+        const cards = [...document.querySelectorAll('.vault-config-card')];
+        cards.forEach(card => {
+            const button = card.querySelector('[data-vault-action="remove"]');
+            if (button) button.disabled = cards.length <= 1;
+        });
+    }
+
+    addServerVaultConfigRow() {
+        const list = document.getElementById('server-vault-config-list');
+        if (!list) return;
+        const index = list.querySelectorAll('.vault-config-card').length + 1;
+        const card = this.createServerVaultConfigCard({
+            id: `vault-${index}`,
+            name: `Vault ${index}`,
+            description: '',
+            path: `/vaults/vault-${index}`,
+            mode: 'read-only',
+            permissions: { delete: false },
+            resolved_permissions: { delete: false },
+            available: false,
+        });
+        list.appendChild(card);
+        this.markServerVaultConfigDirty();
+        this.updateServerVaultRemoveButtons();
+    }
+
+    readServerVaultConfigFromForm() {
+        return [...document.querySelectorAll('.vault-config-card')].map(card => {
+            return this.readServerVaultConfigCard(card);
+        });
+    }
+
+    readServerVaultConfigCard(card) {
+        const permissions = { ...(card._basePermissions || {}) };
+        permissions.delete = !!card.querySelector('[data-vault-field="delete"]')?.checked;
+        return {
+            id: card.querySelector('[data-vault-field="id"]')?.value?.trim() || '',
+            name: card.querySelector('[data-vault-field="name"]')?.value?.trim() || '',
+            description: card.querySelector('[data-vault-field="description"]')?.value?.trim() || '',
+            path: card.querySelector('[data-vault-field="path"]')?.value?.trim() || '',
+            mode: card.querySelector('[data-vault-field="mode"]')?.value || 'read-only',
+            permissions,
+        };
+    }
+
+    async removeCurrentVaultConfig(vaultId) {
+        const id = this.normalizeVaultId(vaultId || this.currentConfigVaultId);
+        const vault = this.getServerVaultConfig(id);
+        if (!id || !vault) return;
+        const confirmed = window.confirm(`Reset "${vault.name || id}" settings in mdvr.yaml? The Docker-mounted vault remains visible.`);
+        if (!confirmed) return;
+        this.setSingleVaultConfigStatus('Removing vault entry...', 'info');
+        const response = await this.fetchApi(`/api/admin/vault-config/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) {
+            const message = this.humanizeFetchError(await response.text());
+            this.setSingleVaultConfigStatus(`Remove failed: ${message}`, 'error');
+            return;
+        }
+        this.serverVaultConfig = await response.json();
+        this.vaultPermissions.clear();
+        await this.loadVaults();
+        await this.switchView('config');
+        await this.loadAdminVaultConfig();
+        this.populateConfigUI();
+        this.updateUrlForSettings();
+    }
+
+    async saveAdminVaultConfigIfDirty() {
+        if (this.advancedConfigDirty) {
+            await this.saveAdvancedConfigText();
+            return;
+        }
+        if (!this.serverVaultConfigDirty) return;
+        const response = await this.fetchApi('/api/admin/vault-config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vaults: this.readServerVaultConfigFromForm() }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        this.serverVaultConfig = await response.json();
+        this.serverVaultConfigDirty = false;
+        this.vaultPermissions.clear();
+        this.setServerConfigStatus('Vault config saved.', 'ok');
+        this.renderServerVaultConfig();
+    }
+
+    async toggleAdvancedConfig() {
+        const textarea = document.getElementById('advanced-config-text');
+        const button = document.getElementById('advanced-config-toggle');
+        if (!textarea || !button) return;
+        const opening = textarea.classList.contains('hidden');
+        textarea.classList.toggle('hidden', !opening);
+        button.textContent = opening ? 'Close YAML' : 'Open YAML';
+        if (opening && !this.advancedConfigLoaded) {
+            this.setAdvancedConfigStatus('Loading raw mdvr.yaml...', 'info');
+            try {
+                const response = await this.fetchApi('/api/admin/config-text');
+                if (!response.ok) throw new Error(await response.text());
+                const data = await response.json();
+                textarea.value = data.content || '';
+                this.advancedConfigLoaded = true;
+                this.advancedConfigDirty = false;
+                this.setAdvancedConfigStatus(`${data.config_file || 'mdvr.yaml'} · ${data.writable ? 'writable' : 'read-only'}`, data.writable ? 'ok' : 'warn');
+            } catch (error) {
+                this.setAdvancedConfigStatus(`Unable to load YAML: ${this.humanizeFetchError(error)}`, 'error');
+            }
+        }
+    }
+
+    async saveAdvancedConfigText() {
+        const textarea = document.getElementById('advanced-config-text');
+        if (!textarea) return;
+        const response = await this.fetchApi('/api/admin/config-text', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: textarea.value }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        this.serverVaultConfig = await response.json();
+        this.serverVaultConfigDirty = false;
+        this.advancedConfigDirty = false;
+        this.vaultPermissions.clear();
+        this.renderServerVaultConfig();
+        this.setAdvancedConfigStatus('Advanced YAML saved.', 'ok');
+    }
+
+    async saveSingleVaultConfig() {
+        if (this.singleVaultAdvancedDirty) {
+            await this.saveSingleVaultAdvancedConfigText();
+            return;
+        }
+        const card = document.querySelector('#single-vault-config-card .vault-config-card');
+        if (!card) throw new Error('No vault config card found');
+        const nextVault = this.readServerVaultConfigCard(card);
+        const currentVaults = this.serverVaultConfig?.vaults || [];
+        const replaced = currentVaults.map(vault => this.normalizeVaultId(vault.id) === this.currentConfigVaultId ? nextVault : {
+            id: vault.id,
+            name: vault.name,
+            description: vault.description || '',
+            path: vault.path,
+            mode: vault.mode || 'read-only',
+            permissions: vault.permissions || {},
+        });
+        const response = await this.fetchApi('/api/admin/vault-config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vaults: replaced }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        this.serverVaultConfig = await response.json();
+        this.currentConfigVaultId = this.normalizeVaultId(nextVault.id);
+        this.singleVaultConfigDirty = false;
+        this.vaultPermissions.clear();
+        this.renderSingleVaultConfigPage();
+        this.updateUrlForVaultSettings(this.currentConfigVaultId, { replace: true });
+        this.setSingleVaultConfigStatus('Vault config saved.', 'ok');
+    }
+
+    async toggleSingleVaultAdvancedConfig() {
+        const textarea = document.getElementById('single-vault-advanced-text');
+        const button = document.getElementById('single-vault-advanced-toggle');
+        if (!textarea || !button || !this.currentConfigVaultId) return;
+        const opening = textarea.classList.contains('hidden');
+        textarea.classList.toggle('hidden', !opening);
+        button.textContent = opening ? 'Close YAML' : 'Open YAML';
+        if (opening && !this.singleVaultAdvancedLoaded) {
+            this.setSingleVaultAdvancedStatus('Loading vault YAML...', 'info');
+            try {
+                const response = await this.fetchApi(`/api/admin/vault-config/${encodeURIComponent(this.currentConfigVaultId)}/text`);
+                if (!response.ok) throw new Error(await response.text());
+                const data = await response.json();
+                textarea.value = data.content || '';
+                this.singleVaultAdvancedLoaded = true;
+                this.singleVaultAdvancedDirty = false;
+                this.setSingleVaultAdvancedStatus(`${data.config_file || 'mdvr.yaml'} · ${data.writable ? 'writable' : 'read-only'}`, data.writable ? 'ok' : 'warn');
+            } catch (error) {
+                this.setSingleVaultAdvancedStatus(`Unable to load vault YAML: ${this.humanizeFetchError(error)}`, 'error');
+            }
+        }
+    }
+
+    async saveSingleVaultAdvancedConfigText() {
+        const textarea = document.getElementById('single-vault-advanced-text');
+        if (!textarea || !this.currentConfigVaultId) return;
+        const response = await this.fetchApi(`/api/admin/vault-config/${encodeURIComponent(this.currentConfigVaultId)}/text`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: textarea.value }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        this.serverVaultConfig = data;
+        this.currentConfigVaultId = this.normalizeVaultId(data.vault?.id || this.currentConfigVaultId);
+        this.singleVaultConfigDirty = false;
+        this.singleVaultAdvancedDirty = false;
+        this.vaultPermissions.clear();
+        this.renderSingleVaultConfigPage();
+        this.updateUrlForVaultSettings(this.currentConfigVaultId, { replace: true });
+        this.setSingleVaultAdvancedStatus('Advanced vault YAML saved.', 'ok');
     }
 
     async loadServerConfig() {
@@ -2603,7 +3237,12 @@ class ObsidianReader {
     }
 
     escapeHtml(text) {
-        return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     showNewFileModal(prefix = '') {
@@ -2805,6 +3444,8 @@ class ObsidianReader {
         };
         localStorage.setItem('mdvr_config', JSON.stringify(this.themeConfig));
         localStorage.setItem('owr_config', JSON.stringify(this.themeConfig));
+        await this.saveAdminVaultConfigIfDirty();
+        await this.loadVaults();
         this.applyConfig();
         await this.loadServerConfig();
     }

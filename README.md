@@ -1,7 +1,7 @@
 # mdvr (Markdown Vault Reader)
 
 mdvr is a small self-hosted browser app for reading Markdown notes, Excalidraw
-files, images, PDFs, and text files from configured vaults. It also has optional
+files, images, PDFs, and text files from mounted vaults. It also has optional
 write actions for vaults that are configured as writable.
 
 ## Why
@@ -26,7 +26,7 @@ lightweight that works in any web browser.
 
 ## What it does
 
-- Reads one or more configured vaults from the browser
+- Reads one or more Docker-mounted vaults from the browser
 - Supports folders, recent files, search, tags, links, and backlinks
 - Uses stable URLs such as `/demo/Research/note.md`
 - Renders local images and first-page PDF previews in Markdown
@@ -95,7 +95,7 @@ read-only first, then change write settings only after backups are in place.
 
 ## Default Vaults
 
-The default Docker setup includes two vault entries:
+The default Docker setup mounts two vaults:
 
 - `demo`
   - Name: `Demo test vault`
@@ -113,6 +113,9 @@ The Settings page lets you select one or more available vaults. With one vault
 selected, the file tree stays flat. With multiple vaults selected, the tree adds
 a vault level.
 
+Docker Compose controls which vaults exist. Settings shows discovered mounted
+vaults and can edit their display name, mode, and permissions.
+
 ## Add Your Vault
 
 Set `MDVR_OBSIDIAN_VAULT` to your host vault path:
@@ -123,6 +126,19 @@ MDVR_OBSIDIAN_VAULT=/absolute/path/to/vault docker compose up -d
 
 The default compose file mounts this vault read-only. Keep that default until
 you have checked that links, rendering, and search work as expected.
+
+For multiple vaults, mount each host folder to a stable direct child path under
+`/vaults`. mdvr discovers those directories automatically:
+
+```yaml
+volumes:
+  - /host/personal:/vaults/personal:ro
+  - /host/archive:/vaults/archive:ro
+```
+
+Use Settings or `mdvr.yaml` only to customize discovered vaults: display name,
+mode, description, and permissions. The app cannot add or remove Docker volume
+mounts from the browser.
 
 ## Write Access
 
@@ -143,17 +159,16 @@ Delete is soft-delete only and must be enabled explicitly. Deleted files move to
 
 mdvr is configured with YAML.
 
+Docker Compose owns mounted vaults and the default Basic Auth environment
+variables. `mdvr.yaml` owns per-vault settings for discovered mounts. Settings
+can edit those settings when `/app/mdvr.yaml` is mounted writable.
+
 Main defaults:
 
 ```yaml
 server:
   unknown_keys: fail
   write_without_auth: warn
-  auth:
-    enabled: true
-    realm: MDVR
-    user: mdvr
-    password: change-me
 
 defaults:
   mode: read-only
@@ -202,6 +217,13 @@ python tools/mdvr_link.py --raw "Research/note.md"
 pip install -r requirements.txt -r requirements-dev.txt
 uvicorn main:app --reload --port 8000
 pytest -q
+```
+
+Docker test image:
+
+```bash
+MDVR_INSTALL_DEV_DEPS=1 docker compose build mdvr
+docker compose run --rm mdvr pytest -q
 ```
 
 ## License

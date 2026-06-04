@@ -7,7 +7,7 @@ This file explains the YAML config structure used by mdvr.
 This example is safe by default:
 - the internal demo vault is write-enabled
 - the Obsidian vault is read-only
-- auth is enabled
+- Docker Compose enables Basic Auth through `MDVR_AUTH_*` environment variables
 - delete is enabled only for the disposable demo vault
 - only markdown, plain text, and Excalidraw files are writable by default
 
@@ -21,12 +21,6 @@ server:
   port: 8080
   unknown_keys: fail
   write_without_auth: warn
-  auth:
-    enabled: true
-    realm: MDVR
-    user: mdvr
-    password: replace-with-a-long-secret
-    file: /run/mdvr.htpasswd
 
 defaults:
   mode: read-only
@@ -55,8 +49,8 @@ defaults:
 vaults:
   - id: demo
     name: Demo test vault
-    description: Safe internal demo vault. You can delete and recreate it.
-    path: /app/welcome-vault
+    description: Safe internal demo vault. Remove its Docker mount to hide it.
+    path: /vaults/demo
     mode: read-write
     permissions:
       delete: true
@@ -93,16 +87,16 @@ Common keys:
 
 ### `server`
 
-Server runtime and auth settings.
+Server runtime settings. In Docker, Basic Auth is normally configured through
+Compose environment variables (`MDVR_AUTH_ENABLED`, `MDVR_AUTH_USER`,
+`MDVR_AUTH_PASSWORD`, `MDVR_AUTH_REALM`) instead of `mdvr.yaml`.
 
 Common keys:
 - `host` — bind address inside the container or local process
 - `port` — listen port inside the container
 - `unknown_keys` — how strict validation is for unexpected YAML keys (`fail` or `warn`)
 - `write_without_auth` — how strict the app is when write access exists without auth (`fail`, `warn`, or `allow`)
-- `auth.enabled` — turn auth on or off
-- `auth.realm` — HTTP Basic Auth realm
-- `auth.user` / `auth.password` / `auth.file` — auth credentials and htpasswd file path
+- `auth.*` — optional fallback auth config when the Docker env variables are not set
 
 ### `defaults`
 
@@ -114,12 +108,18 @@ Common keys:
 
 ### `vaults`
 
-A list of configured vaults.
+A list of settings overrides for Docker-mounted vaults.
 
 The browser lets users select one or more available vaults for Home. One
 selected vault keeps the file tree flat. Multiple selected vaults add a vault
 level in the Home file tree and combine recent files/search. Opening a file
 switches to that file's vault id, so actions use that vault's permissions.
+
+Docker Compose volume mounts are the Settings source of truth. mdvr discovers
+direct child directories under `/vaults` by default, configurable with
+`MDVR_VAULT_ROOTS`. If Compose mounts one vault, Settings shows one vault. If
+Compose mounts three vaults, Settings shows three. `mdvr.yaml` only customizes
+discovered vaults.
 
 Each vault should have:
 - `id` — stable identifier used in the UI and links
@@ -128,6 +128,10 @@ Each vault should have:
 - `path` — absolute container path to the vault root
 - `mode` — base permission preset
 - `permissions` — per-vault overrides
+
+Docker must mount the host folder at the same container `path`. Settings can edit
+the YAML settings entry, but it cannot add or remove host mounts from an
+already-running container.
 
 ## Vault modes
 
@@ -176,6 +180,28 @@ permissions:
 - Absolute container path
 - Must point to a mounted vault directory inside the container
 - Never accept arbitrary host paths from the browser UI
+
+Example with multiple vaults:
+
+```yaml
+vaults:
+  - id: personal
+    name: Personal
+    path: /vaults/personal
+    mode: read-only
+  - id: archive
+    name: Archive
+    path: /vaults/archive
+    mode: read-only
+```
+
+Matching Docker Compose:
+
+```yaml
+volumes:
+  - /host/personal:/vaults/personal:ro
+  - /host/archive:/vaults/archive:ro
+```
 
 ### `mode`
 
@@ -269,7 +295,7 @@ This is the default safe pattern:
 vaults:
   - id: demo
     name: Demo test vault
-    path: /app/welcome-vault
+    path: /vaults/demo
     mode: read-write
     permissions:
       delete: true
