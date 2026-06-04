@@ -1,17 +1,22 @@
-# mdvr
+# mdvr (Markdown Vault Reader)
 
-mdvr is a small self-hosted browser app for reading Markdown vaults.
+mdvr is a small self-hosted browser app for reading Markdown notes, Excalidraw
+files, images, PDFs, and text files from configured vaults. It also has optional
+write actions for vaults that are configured as writable.
 
-The name comes from "markdown vault reader". The abbreviation is context, not a
-separate product name.
+## Why
 
-It can read Markdown notes, Excalidraw files, images, PDFs, and text files from
-configured vaults. It also has optional write actions for vaults that are
-configured as writable.
+I got tired of configuring CouchDB and LiveSync, and I have some devices where I
+cannot install third-party apps. I tried to find something similar, but nothing
+was a full fit, so I decided to make my own.
 
-This project was created with LLM assistance. See
-[AI-assisted development note](docs/ai-assisted-development.md) for the current
-scope and caveats.
+The base idea is simple: keep a central vault as the source of truth. Everything
+else can read from it, make occasional changes when allowed, and share access
+inside a local network or over Tailscale.
+
+This project was created with heavy LLM assistance, but it still took time to
+polish and make work reliably. I hope it is useful if you need something
+lightweight that works in any web browser.
 
 ## Screenshots
 
@@ -160,7 +165,6 @@ python tools/mdvr_link.py --raw "Research/note.md"
 - [Docker](docs/docker.md)
 - [Security](docs/security.md)
 - [Tailscale](docs/tailscale.md)
-- [AI-assisted development note](docs/ai-assisted-development.md)
 
 ## Development
 
