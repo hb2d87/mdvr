@@ -5,6 +5,10 @@ services:
     ports:
       - "8088:8080"
     volumes:
+      # Demo vault. Remove this line and the mdvr-demo volume below if you do
+      # not want demo content.
+      - mdvr-demo:/vaults/demo
+
       # Optional real vault mount. It is read-only by default.
       # Put MDVR_OBSIDIAN_VAULT=/absolute/path/to/your/vault in .env.
       - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
@@ -15,3 +19,6 @@ services:
       MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
       MDVR_AUTH_FILE: /run/mdvr.htpasswd
     restart: unless-stopped
+
+volumes:
+  mdvr-demo:

@@ -46,6 +46,10 @@ services:
     ports:
       - "8088:8080"
     volumes:
+      # Demo vault. Remove this line and the mdvr-demo volume below if you do
+      # not want demo content.
+      - mdvr-demo:/vaults/demo
+
       # Optional real vault mount. Start read-only.
       - /absolute/path/to/your/obsidian-vault:/vaults/obsidian:ro
     environment:
@@ -54,11 +58,14 @@ services:
       MDVR_AUTH_PASSWORD: change-this-password
       MDVR_AUTH_REALM: MDVR
     restart: unless-stopped
+
+volumes:
+  mdvr-demo:
 ```
 
-The image already contains the default config and demo vault. Demo vault changes
-inside the image are disposable; mount your own config and vault paths when you
-want persistent customized state.
+The image seeds the `mdvr-demo` named volume from the bundled demo vault. Demo
+changes persist in that named volume until you delete the volume. Remove the
+`mdvr-demo:/vaults/demo` line if you do not want demo content.
 
 ## Example `docker-compose.yml`
 

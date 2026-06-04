@@ -19,6 +19,7 @@ RUN if [ "$INSTALL_DEV_DEPS" = "1" ]; then pip install --no-cache-dir -r require
 # Copy application code
 COPY . .
 RUN chmod +x /app/docker-entrypoint.sh
+RUN mkdir -p /vaults/demo && cp -a /app/welcome-vault/. /vaults/demo/
 
 # Expose the nginx public port used by MDVR
 EXPOSE 8080

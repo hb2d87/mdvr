@@ -81,6 +81,11 @@ services:
     ports:
       - "8088:8080"
     volumes:
+      # Demo vault. Remove this line and the mdvr-demo volume below if you do
+      # not want demo content.
+      - mdvr-demo:/vaults/demo
+
+      # Your vault. Start read-only.
       - /absolute/path/to/your/obsidian-vault:/vaults/obsidian:ro
     environment:
       MDVR_AUTH_ENABLED: "1"
@@ -88,14 +93,19 @@ services:
       MDVR_AUTH_PASSWORD: change-this-password
       MDVR_AUTH_REALM: MDVR
     restart: unless-stopped
+
+volumes:
+  mdvr-demo:
 ```
 
-The image includes the demo vault and default config. Mount your real vault
-read-only first, then change write settings only after backups are in place.
+The image seeds the `mdvr-demo` named volume from the bundled demo vault. Remove
+the `mdvr-demo:/vaults/demo` mount if you do not want demo content. Mount your
+real vault read-only first, then change write settings only after backups are in
+place.
 
 ## Default Vaults
 
-The default Docker setup mounts two vaults:
+The default Docker setup represents vaults as Docker mounts:
 
 - `demo`
   - Name: `Demo test vault`
