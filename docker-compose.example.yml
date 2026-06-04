@@ -3,15 +3,22 @@ services:
     container_name: mdvr
     build:
       context: .
+      args:
+        INSTALL_DEV_DEPS: ${MDVR_INSTALL_DEV_DEPS:-0}
     ports:
       - "8088:8080"
     volumes:
-      # Safe test vault first. mdvr.yaml makes this one writable/deletable.
-      - ./welcome-vault:/app/welcome-vault
+      # Safe test vault first. Remove this mount if you do not want demo content.
+      - ./welcome-vault:/vaults/demo
 
       # Obsidian vault starts read-only.
       # Put MDVR_OBSIDIAN_VAULT=/absolute/path/to/your/vault in .env.
       - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian:ro
+
+      # Multiple vaults use the same pattern. Direct children of /vaults are
+      # discovered automatically; mdvr.yaml/Settings store per-vault settings.
+      # - ${MDVR_WORK_VAULT:-./vaults/work}:/vaults/work:ro
+      # - ${MDVR_ARCHIVE_VAULT:-./vaults/archive}:/vaults/archive:ro
 
       # Write-enabled Obsidian vault example:
       # - ${MDVR_OBSIDIAN_VAULT:-./vaults/obsidian}:/vaults/obsidian
@@ -23,7 +30,9 @@ services:
       #
       # Auth is on by default. Change the password before exposing mdvr.
       # MDVR_AUTH_PASSWORD=replace-with-a-long-secret
-      - ./mdvr.yaml:/app/mdvr.yaml:ro
+      # Mounted writable so Settings can update vault entries. Keep Basic Auth
+      # enabled when allowing browser-side config changes.
+      - ./mdvr.yaml:/app/mdvr.yaml
     environment:
       MDVR_CONFIG_FILE: /app/mdvr.yaml
       MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}
@@ -31,4 +40,5 @@ services:
       MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}
       MDVR_AUTH_REALM: ${MDVR_AUTH_REALM:-MDVR}
       MDVR_AUTH_FILE: /run/mdvr.htpasswd
+      MDVR_VAULT_ROOTS: ${MDVR_VAULT_ROOTS:-/vaults}
     restart: unless-stopped

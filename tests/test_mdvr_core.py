@@ -276,6 +276,328 @@ def test_configured_vault_ids_resolve_to_absolute_paths(tmp_path, monkeypatch) -
     assert main.list_vault_names()[0]["value"] == "personal-notes"
 
 
+def test_docker_mounted_vault_roots_control_visible_vaults(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault_root = tmp_path / "vaults"
+    demo = vault_root / "demo"
+    archive = vault_root / "archive"
+    demo.mkdir(parents=True)
+    archive.mkdir()
+    config_path.write_text(
+        """app:
+  name: MDVR
+vaults: []
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("MDVR_VAULT_ROOTS", vault_root.as_posix())
+    main.invalidate_vault_caches()
+
+    options = main.list_vault_names()
+
+    assert [option["id"] for option in options] == ["archive", "demo"]
+    assert [option["path"] for option in options] == [archive.as_posix(), demo.as_posix()]
+    assert main.resolve_vault_root(cast(Any, FakeRequest({"x-vault-path": "archive"}))) == archive.as_posix()
+
+
+def test_mdvr_yaml_overrides_discovered_mount_settings(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault_root = tmp_path / "vaults"
+    demo = vault_root / "demo"
+    demo.mkdir(parents=True)
+    config_path.write_text(
+        """server:
+  write_without_auth: warn
+vaults:
+  - id: demo
+    name: Demo test vault
+    path: /ignored/by/id/matching
+    mode: read-write
+    permissions:
+      delete: true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("MDVR_VAULT_ROOTS", vault_root.as_posix())
+    monkeypatch.setenv("MDVR_AUTH_ENABLED", "1")
+    main.invalidate_vault_caches()
+
+    admin = main.api_admin_vault_config()
+
+    assert admin["vaults"][0]["id"] == "demo"
+    assert admin["vaults"][0]["name"] == "Demo test vault"
+    assert admin["vaults"][0]["path"] == demo.as_posix()
+    assert admin["vaults"][0]["resolved_permissions"]["edit"] is True
+    assert admin["vaults"][0]["resolved_permissions"]["delete"] is True
+
+
+def test_admin_vault_config_updates_yaml_and_invalidates_cache(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    old_vault = tmp_path / "old-vault"
+    new_vault = tmp_path / "new-vault"
+    old_vault.mkdir()
+    new_vault.mkdir()
+    config_path.write_text(
+        f"""server:
+  auth:
+    enabled: true
+    user: mdvr
+    password: secret
+vaults:
+  - id: old
+    name: Old Vault
+    path: {old_vault.as_posix()}
+    mode: read-only
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("MDVR_AUTH_ENABLED", raising=False)
+    main.invalidate_vault_caches()
+
+    before = main.api_admin_vault_config()
+    assert before["vaults"][0]["id"] == "old"
+    assert "server" not in before
+
+    updated = main.api_update_admin_vault_config(
+        main.VaultConfigUpdateRequest(
+            vaults=[
+                main.ConfigVaultRequest(
+                    id="new",
+                    name="New Vault",
+                    description="Updated from settings",
+                    path=new_vault.as_posix(),
+                    mode="read-write",
+                    permissions={"delete": False},
+                )
+            ]
+        )
+    )
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["server"]["auth"]["password"] == "secret"
+    assert saved["vaults"][0]["id"] == "new"
+    assert saved["vaults"][0]["name"] == "New Vault"
+    assert updated["vaults"][0]["resolved_permissions"]["edit"] is True
+    assert main.list_vault_names()[0]["value"] == "new"
+
+
+def test_admin_vault_config_rejects_invalid_payload_without_rewriting(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    original = f"""server:
+  auth:
+    enabled: true
+vaults:
+  - id: ok
+    path: {vault.as_posix()}
+"""
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    main.invalidate_vault_caches()
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.api_update_admin_vault_config(
+            main.VaultConfigUpdateRequest(
+                vaults=[main.ConfigVaultRequest(id="../bad", path=vault.as_posix())]
+            )
+        )
+
+    assert exc.value.status_code == 422
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_admin_vault_config_write_requires_auth_enabled(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config_path.write_text(
+        f"""server:
+  auth:
+    enabled: false
+vaults:
+  - id: ok
+    path: {vault.as_posix()}
+    mode: read-only
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("MDVR_AUTH_ENABLED", raising=False)
+    main.invalidate_vault_caches()
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.api_update_admin_vault_config(
+            main.VaultConfigUpdateRequest(
+                vaults=[main.ConfigVaultRequest(id="ok", path=vault.as_posix(), mode="read-only")]
+            )
+        )
+
+    assert exc.value.status_code == 403
+
+
+def test_admin_config_text_validates_before_rewriting(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault = tmp_path / "vault"
+    next_vault = tmp_path / "next"
+    vault.mkdir()
+    next_vault.mkdir()
+    original = f"""server:
+  auth:
+    enabled: true
+vaults:
+  - id: ok
+    path: {vault.as_posix()}
+"""
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    main.invalidate_vault_caches()
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.api_update_admin_config_text(main.ConfigTextUpdateRequest(content="vaults:\n  - id: bad\n    path: relative\n"))
+    assert exc.value.status_code == 422
+    assert config_path.read_text(encoding="utf-8") == original
+
+    updated = f"""server:
+  auth:
+    enabled: true
+vaults:
+  - id: next
+    name: Next
+    path: {next_vault.as_posix()}
+    mode: read-only
+"""
+    response = main.api_update_admin_config_text(main.ConfigTextUpdateRequest(content=updated))
+
+    assert response["vaults"][0]["id"] == "next"
+    assert config_path.read_text(encoding="utf-8").endswith("mode: read-only\n")
+
+
+def test_config_writer_falls_back_when_bind_mount_rejects_atomic_replace(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    config_path.write_text("old: true\n", encoding="utf-8")
+
+    def busy_replace(_src: str, _dst: str) -> None:
+        raise OSError(main.errno.EBUSY, "Device or resource busy")
+
+    monkeypatch.setattr(main.os, "replace", busy_replace)
+
+    main._write_mdvr_config_text(config_path.as_posix(), "new: true")
+
+    assert config_path.read_text(encoding="utf-8") == "new: true\n"
+
+
+def test_admin_single_vault_config_text_updates_only_target_vault(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    one = tmp_path / "one"
+    two = tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    config_path.write_text(
+        f"""server:
+  auth:
+    enabled: true
+vaults:
+  - id: one
+    name: One
+    path: {one.as_posix()}
+    mode: read-only
+  - id: two
+    name: Two
+    path: {two.as_posix()}
+    mode: read-only
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    main.invalidate_vault_caches()
+
+    text = main.api_admin_single_vault_config_text("two")
+    assert "id: two" in text["content"]
+    assert "id: one" not in text["content"]
+    assert "Common modes" in text["content"]
+
+    response = main.api_update_admin_single_vault_config_text(
+        "two",
+        main.ConfigTextUpdateRequest(
+            content=f"""id: second
+name: Second
+path: {two.as_posix()}
+mode: read-write
+permissions:
+  delete: false
+"""
+        ),
+    )
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert [vault["id"] for vault in saved["vaults"]] == ["one", "second"]
+    assert response["vault"]["id"] == "second"
+    assert response["vault"]["resolved_permissions"]["edit"] is True
+
+
+def test_missing_configured_vaults_remain_visible_with_error(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    missing = tmp_path / "vaults" / "missing"
+    config_path.write_text(
+        f"""vaults:
+  - id: missing
+    name: Missing Vault
+    path: {missing.as_posix()}
+    mode: read-only
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    main.invalidate_vault_caches()
+
+    options = main.list_vault_names()
+    admin = main.api_admin_vault_config()
+
+    assert options[0]["id"] == "missing"
+    assert options[0]["available"] is False
+    assert options[0]["status"] == "missing"
+    assert "does not exist" in options[0]["error"]
+    assert admin["vaults"][0]["available"] is False
+
+
+def test_admin_remove_vault_config_updates_yaml_without_deleting_files(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "keep.md").write_text("keep", encoding="utf-8")
+    config_path.write_text(
+        f"""server:
+  write_without_auth: warn
+vaults:
+  - id: first
+    name: First
+    path: {first.as_posix()}
+    mode: read-only
+  - id: second
+    name: Second
+    path: {second.as_posix()}
+    mode: read-only
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("MDVR_AUTH_ENABLED", "1")
+    main.invalidate_vault_caches()
+
+    response = main.api_delete_admin_vault_config("first")
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert [vault["id"] for vault in response["vaults"]] == ["second"]
+    assert [vault["id"] for vault in saved["vaults"]] == ["second"]
+    assert (first / "keep.md").read_text(encoding="utf-8") == "keep"
+
+
 def test_unknown_configured_vault_header_does_not_fall_back_to_base(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "mdvr.yaml"
     base = tmp_path / "base"
@@ -517,7 +839,7 @@ def test_shipped_docker_defaults_enable_basic_auth() -> None:
     env_example = (root / ".env.example").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
 
-    assert config["server"]["auth"]["enabled"] is True
+    assert "auth" not in config["server"]
     assert "MDVR_AUTH_ENABLED: ${MDVR_AUTH_ENABLED:-1}" in compose
     assert "MDVR_AUTH_USER: ${MDVR_AUTH_USER:-mdvr}" in compose
     assert "MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}" in compose
@@ -532,6 +854,7 @@ def test_shipped_vaults_are_demo_and_obsidian_examples() -> None:
     vaults = config["vaults"]
 
     assert [vault["id"] for vault in vaults] == ["demo", "obsidian"]
+    assert vaults[0]["path"] == "/vaults/demo"
     assert vaults[0]["mode"] == "read-write"
     assert vaults[0]["permissions"]["delete"] is True
     assert ".txt" in config["defaults"]["permissions"]["files_format_new"]
@@ -548,7 +871,13 @@ def test_frontend_vault_selection_contract_is_checkbox_based() -> None:
     assert "mdvr_vault_aliases" in app_js
     assert "if (vaultId === 'real') return 'obsidian';" in app_js
     assert "checkbox.type = 'checkbox'" in app_js
-    assert "Display name for" in app_js
+    assert "vault-config-button" in app_js
+    assert "settings/vault/" in app_js
+    assert "/api/admin/vault-config" in app_js
+    assert "/api/admin/vault-config/${encodeURIComponent(this.currentConfigVaultId)}/text" in app_js
+    assert "view-vault-config" in index_html
+    assert "single-vault-config-card" in index_html
+    assert "single-vault-advanced-text" in index_html
     assert "this.vaultName = this.vaultLabel(this.activeVault) || data.name;" in app_js
     assert "home-upload-input" in index_html
     assert "icon) icon.textContent = 'upload';" in app_js
