@@ -24,54 +24,9 @@ lightweight that works in any web browser.
 | --- | --- | --- |
 | ![Home view with recent files and file tree](docs/assets/screenshots/mdvr-home-demo.png) | ![Reader view with image and PDF preview](docs/assets/screenshots/mdvr-media-reader.png) | ![Settings view with vault selection and theme palette](docs/assets/screenshots/mdvr-settings.png) |
 
-## What it does
+## Quick Install
 
-- Reads one or more Docker-mounted vaults from the browser
-- Supports folders, recent files, search, tags, links, and backlinks
-- Uses stable URLs such as `/demo/Research/note.md`
-- Renders local images and first-page PDF previews in Markdown
-- Keeps Obsidian-style paths with spaces and underscores intact
-- Enforces read/write permissions in the UI and backend
-- Uses nginx Basic Auth by default in Docker
-
-## Quick Start
-
-From a source checkout, start the container:
-
-```bash
-docker compose up -d --build
-```
-
-Open:
-
-```text
-http://localhost:8088
-```
-
-Default login:
-
-```text
-user: mdvr
-password: change-me
-```
-
-Change the password before exposing mdvr outside a trusted local machine.
-
-Port `8088` is the default host port. The container listens on `8080`, and
-Docker maps `8088:8080`. This is a reasonable local default because it avoids
-privileged ports and common development ports. If you expose mdvr more broadly,
-put it behind a network boundary you trust, such as a reverse proxy, VPN, or
-Tailscale.
-
-## Published Docker Image
-
-The published image is:
-
-```text
-ghcr.io/hb2d87/mdvr:latest
-```
-
-Use it when you want to run mdvr without cloning and building the repository:
+Use the published Docker image:
 
 ```yaml
 services:
@@ -98,143 +53,60 @@ volumes:
   mdvr-demo:
 ```
 
-The image seeds the `mdvr-demo` named volume from the bundled demo vault. Remove
-the `mdvr-demo:/vaults/demo` mount if you do not want demo content. Mount your
-real vault read-only first, then change write settings only after backups are in
-place.
-
-## Default Vaults
-
-The default Docker setup represents vaults as Docker mounts:
-
-- `demo`
-  - Name: `Demo test vault`
-  - Writable
-  - Soft-delete enabled
-  - Intended for testing create, edit, rename, upload, and delete flows
-
-- `obsidian`
-  - Name: `Obsidian`
-  - Read-only
-  - Mounted from `MDVR_OBSIDIAN_VAULT`, or a local fallback directory
-  - Intended as the safe first mount for a real note vault
-
-The Settings page lets you select one or more available vaults. With one vault
-selected, the file tree stays flat. With multiple vaults selected, the tree adds
-a vault level.
-
-Docker Compose controls which vaults exist. Settings shows discovered mounted
-vaults and can edit their display name, mode, and permissions.
-
-## Add Your Vault
-
-Set `MDVR_OBSIDIAN_VAULT` to your host vault path:
+Start it:
 
 ```bash
-MDVR_OBSIDIAN_VAULT=/absolute/path/to/vault docker compose up -d
+docker compose up -d
 ```
 
-The default compose file mounts this vault read-only. Keep that default until
-you have checked that links, rendering, and search work as expected.
+Open:
 
-For multiple vaults, mount each host folder to a stable direct child path under
-`/vaults`. mdvr discovers those directories automatically:
-
-```yaml
-volumes:
-  - /host/personal:/vaults/personal:ro
-  - /host/archive:/vaults/archive:ro
+```text
+http://localhost:8088
 ```
 
-Use Settings or `mdvr.yaml` only to customize discovered vaults: display name,
-mode, description, and permissions. The app cannot add or remove Docker volume
-mounts from the browser.
+Default demo login is `mdvr` / `change-me` only for local testing. Change
+`MDVR_AUTH_PASSWORD` before sharing the service.
 
-## Write Access
+The demo vault is a named Docker volume seeded from the image. Remove
+`mdvr-demo:/vaults/demo` and the `mdvr-demo` volume block if you only want your
+own vault.
 
-The demo vault is writable by default so you can test behavior without touching
-real notes.
+## What It Does
 
-For a real vault, enable writes only when you mean to:
+- Reads one or more Docker-mounted vaults from the browser
+- Supports folders, recent files, search, tags, links, and backlinks
+- Uses stable URLs such as `/demo/Research/note.md`
+- Renders Markdown, text, Excalidraw, images, and first-page PDF previews
+- Allows write actions only for vaults configured as writable
+- Uses nginx Basic Auth by default in Docker
 
-1. Keep auth enabled and change the default password.
-2. Make a backup of the vault.
-3. Remove the read-only marker from the vault mount.
-4. Change that vault mode to `read-write` in the YAML config.
+## Configuration Model
 
-Delete is soft-delete only and must be enabled explicitly. Deleted files move to
-`.mdvr-trash`.
+Docker Compose decides which vault folders exist by mounting them under
+`/vaults/<id>`.
 
-## Configuration
+`mdvr.yaml` and Settings customize those discovered vaults: display name, mode,
+description, and permissions. The browser cannot add or remove Docker volume
+mounts from a running container.
 
-mdvr is configured with YAML.
+Safe default:
 
-Docker Compose owns mounted vaults and the default Basic Auth environment
-variables. `mdvr.yaml` owns per-vault settings for discovered mounts. Settings
-can edit those settings when `/app/mdvr.yaml` is mounted writable.
-
-Main defaults:
-
-```yaml
-server:
-  unknown_keys: fail
-  write_without_auth: warn
-
-defaults:
-  mode: read-only
-  permissions:
-    files_format_read: [.md, .excalidraw, .txt, .png, .jpg, .pdf]
-    files_format_edit: [.md, .excalidraw, .txt]
-    files_format_new: [.md, .excalidraw, .txt]
-```
-
-Vault modes:
-
-- `read-only`: read allowed, writes disabled
-- `read-write`: create, edit, and rename allowed; delete disabled
-- `admin`: create, edit, rename, and soft-delete allowed
-
-Per-vault permissions can override the selected mode. Editable and creatable
-file extensions must be included in readable file extensions.
-
-## Links
-
-mdvr uses exact vault-relative paths as file identity.
-
-These are different files:
-
-- `file like this.md`
-- `file_like_this.md`
-
-Link examples:
-
-```bash
-python tools/mdvr_link.py "Research/note.md"
-python tools/mdvr_link.py --vault obsidian "Research/note.md"
-python tools/mdvr_link.py --raw "Research/note.md"
-```
+- keep real vaults mounted read-only with `:ro`
+- test write actions in the demo vault first
+- enable writes for a real vault only after backups are in place
 
 ## Documentation
 
-- [Configuration](docs/configuration.md)
-- [Docker](docs/docker.md)
-- [Security](docs/security.md)
-- [Tailscale](docs/tailscale.md)
+- [Docker install and operations](docs/docker.md)
+- [Vault configuration](docs/vaults.md)
+- [YAML reference](docs/configuration.md)
+- [Security notes](docs/security.md)
+- [Tailscale notes](docs/tailscale.md)
 
 ## Development
 
-```bash
-pip install -r requirements.txt -r requirements-dev.txt
-uvicorn main:app --reload --port 8000
-pytest -q
-```
-
-Docker test image:
-
-```bash
-MDVR_INSTALL_DEV_DEPS=1 docker compose build mdvr
-docker compose run --rm mdvr pytest -q
-```
+Development notes live in [docs/docker.md](docs/docker.md#build-from-source).
 
 ## License
 

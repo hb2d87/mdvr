@@ -102,15 +102,20 @@ Recommendations:
 - do not trust frontmatter or markdown content as safe HTML
 - test script injection and malformed content cases
 
-## Upload warning
+## Upload And Attachment Warning
 
-If upload is not implemented, do not claim it is supported.
+mdvr supports limited uploads:
 
-If upload is added later:
+- Home can upload Markdown and text files into a writable vault.
+- Reader/edit mode can attach images and PDFs beside the current note.
+
+For upload-related changes:
+
 - validate file types
 - validate paths
 - validate size limits
 - reject uploads that can escape the vault
+- keep real vaults read-only until backups are tested
 
 ## Backup and versioning
 

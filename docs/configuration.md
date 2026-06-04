@@ -1,8 +1,8 @@
-# mdvr configuration
+# mdvr YAML Reference
 
-This file explains the YAML config structure used by mdvr.
+This file explains the `mdvr.yaml` structure used by mdvr.
 
-## Full example `config.yml`
+## Full Example `mdvr.yaml`
 
 This example is safe by default:
 - the internal demo vault is write-enabled
@@ -30,7 +30,6 @@ defaults:
     new_files: false
     rename: false
     delete: false
-    upload: false
     hide_unreadable_files: true
     files_format_read:
       - .md
@@ -44,7 +43,6 @@ defaults:
       - .md
       - .excalidraw
       - .txt
-    files_format_upload: []
 
 vaults:
   - id: demo
@@ -214,21 +212,19 @@ volumes:
 - Useful for disabling delete even in `read-write`
 - Can also override file-format allowlists
 
-## File-format allowlists
+## File-Format Allowlists
 
 mdvr currently uses these allowlist fields:
 
 - `files_format_read`
 - `files_format_edit`
 - `files_format_new`
-- `files_format_upload` is reserved for future broader upload workflows
 
 How they map:
 
 - `read` — which file extensions can be opened or listed
 - `edit` — which file extensions can be saved in place
 - `create` — which file extensions can be created with New file
-- `upload` — reserved for future upload categories beyond current media attachment behavior
 
 Important rules:
 
@@ -245,7 +241,7 @@ Keep the default formats to:
 
 Only add more if the code path, UI, and tests really support them.
 
-## Media and PDF rendering
+## Media And PDF Rendering
 
 mdvr supports image and PDF attachments for readable vaults when the active file
 can be edited and the vault allows creating new files. Attachments are stored in
@@ -260,9 +256,9 @@ Supported attachment formats:
 Markdown preview renders images inline. PDF links render a first-page canvas
 preview with vendored Mozilla PDF.js runtime files under `app/static/vendor/pdfjs`.
 mdvr uses PDF.js for the current lightweight reader because it solves browser
-rendering directly without adding a server-side Java dependency. EmbedPDF remains
-a good future candidate if mdvr needs richer PDF reader controls such as search,
-zoom UI, annotations, or PDFium-backed rendering.
+rendering directly without adding a server-side Java dependency. A richer PDF
+reader can be evaluated later if mdvr needs search, zoom controls, annotations,
+or PDFium-backed rendering.
 
 ## Validation expectations
 
