@@ -63,8 +63,8 @@ volumes:
   mdvr-demo:
 ```
 
-Docker initializes that named volume from the image the first time it is
-created. Changes inside the demo vault persist in the named volume.
+mdvr seeds that mounted volume at startup when `/vaults/demo` is empty. Changes
+inside the demo vault persist in the named volume.
 
 If you do not want demo content, remove both:
 

@@ -825,8 +825,8 @@ def test_secure_path_blocks_traversal_and_symlink_escape(tmp_path) -> None:
 def test_readme_and_shipped_config_agree_on_write_without_auth() -> None:
     root = Path(__file__).resolve().parents[1]
     config = yaml.safe_load((root / "mdvr.yaml").read_text(encoding="utf-8"))
-    readme = (root / "README.md").read_text(encoding="utf-8")
-    documented = set(re.findall(r"write_without_auth:\s*(fail|warn|allow)", readme))
+    docs = (root / "docs" / "configuration.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"write_without_auth:\s*(fail|warn|allow)", docs))
 
     assert config["server"]["write_without_auth"] == "warn"
     assert documented == {"warn"}
@@ -844,8 +844,7 @@ def test_shipped_docker_defaults_enable_basic_auth() -> None:
     assert "MDVR_AUTH_USER: ${MDVR_AUTH_USER:-mdvr}" in compose
     assert "MDVR_AUTH_PASSWORD: ${MDVR_AUTH_PASSWORD:-change-me}" in compose
     assert "MDVR_AUTH_ENABLED=1" in env_example
-    assert "user: mdvr" in readme
-    assert "password: change-me" in readme
+    assert "Default demo login is `mdvr` / `change-me`" in readme
 
 
 def test_shipped_vaults_are_demo_and_obsidian_examples() -> None:
@@ -860,6 +859,16 @@ def test_shipped_vaults_are_demo_and_obsidian_examples() -> None:
     assert ".txt" in config["defaults"]["permissions"]["files_format_new"]
     assert vaults[1]["path"] == "/vaults/obsidian"
     assert vaults[1]["mode"] == "read-only"
+
+
+def test_demo_vault_is_seeded_only_when_mount_is_present() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (root / "docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "cp -a /app/welcome-vault/. /vaults/demo/" not in dockerfile
+    assert "is_mountpoint \"$DEMO_VAULT_PATH\"" in entrypoint
+    assert "cp -a \"$DEMO_SEED_PATH\"/. \"$DEMO_VAULT_PATH\"/" in entrypoint
 
 
 def test_frontend_vault_selection_contract_is_checkbox_based() -> None:
@@ -884,3 +893,13 @@ def test_frontend_vault_selection_contract_is_checkbox_based() -> None:
     assert "handleHomeUploadFiles" in app_js
     assert 'role="group"' in index_html
     assert "__all__" not in index_html
+
+
+def test_frontend_recent_artifacts_filter_cached_files_before_limit() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "this.homeRecentFiles = []" in app_js
+    assert "recentSearchMatches(file, query)" in app_js
+    assert ".filter(file => this.recentSearchMatches(file, query))" in app_js
+    assert "const recentFiles = filteredFiles.slice(0, this.homeRecentLimit)" in app_js

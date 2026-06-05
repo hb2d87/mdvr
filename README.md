@@ -68,9 +68,9 @@ http://localhost:8088
 Default demo login is `mdvr` / `change-me` only for local testing. Change
 `MDVR_AUTH_PASSWORD` before sharing the service.
 
-The demo vault is a named Docker volume seeded from the image. Remove
-`mdvr-demo:/vaults/demo` and the `mdvr-demo` volume block if you only want your
-own vault.
+The demo vault is a named Docker volume seeded at startup when `/vaults/demo` is
+mounted and empty. Remove `mdvr-demo:/vaults/demo` and the `mdvr-demo` volume
+block if you only want your own vault.
 
 ## What It Does
 

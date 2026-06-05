@@ -48,8 +48,8 @@ the file tree adds one top level per vault.
 
 ## Demo Vault
 
-The published image includes demo content. The recommended Compose file mounts
-it explicitly:
+The published image includes demo seed content. The recommended Compose file
+mounts the demo vault explicitly:
 
 ```yaml
 volumes:
@@ -60,7 +60,9 @@ volumes:
 ```
 
 Keep it if you want a safe write-enabled test vault. Remove it if you only want
-your own notes.
+your own notes. Without the `/vaults/demo` mount, the bundled demo settings in
+`mdvr.yaml` are only an unused overlay and should not appear in the vault list
+when another `/vaults/<id>` mount exists.
 
 ## Read-Only Vs Writable
 
