@@ -682,6 +682,33 @@ def test_vault_can_be_selected_by_query_param_for_embedded_media(tmp_path, monke
     assert response.media_type == "application/pdf"
 
 
+def test_download_endpoint_streams_text_file_with_original_filename(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "mdvr.yaml"
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "note.md").write_text("# Note\n", encoding="utf-8")
+    config_path.write_text(
+        f"""vaults:
+  - id: demo
+    path: {vault.as_posix()}
+    mode: read-only
+    permissions:
+      files_format_read: ['.md']
+      files_format_edit: ['.md']
+      files_format_new: ['.md']
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDVR_CONFIG_FILE", str(config_path))
+    main.invalidate_vault_caches()
+
+    response = main.api_download_file("note.md", cast(Any, FakeRequest({"x-vault-path": "demo"})))
+
+    assert isinstance(response, main.FileResponse)
+    assert response.media_type != "application/json"
+    assert 'filename="note.md"' in response.headers["content-disposition"]
+
+
 def test_write_routes_enforce_permissions_and_file_formats(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "mdvr.yaml"
     vault = tmp_path / "vault"
