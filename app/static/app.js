@@ -17,6 +17,7 @@ class ObsidianReader {
         this.homeRecentCount = 0;
         this.homeRecentTotal = 0;
         this.homeRecentLimit = this.getStoredRecentLimit();
+        this.homeRecentFiles = [];
         this.vaultOptions = [];
         this.vaultAliases = this.getStoredVaultAliases();
         this.selectedVaultIds = this.getStoredSelectedVaultIds();
@@ -672,7 +673,7 @@ class ObsidianReader {
     applyHomeSearch(query) {
         const search = document.getElementById('home-search');
         if (search) search.value = query;
-        this.filterFiles(query, 'recent-files-grid');
+        this.renderRecentFiles();
         this.filterFiles(query, 'file-tree');
     }
 
@@ -2270,7 +2271,88 @@ class ObsidianReader {
         if (nextLimit === this.homeRecentLimit) return;
         this.homeRecentLimit = nextLimit;
         localStorage.setItem('mdvr_recent_limit', String(nextLimit));
-        this.loadRecentFiles();
+        this.renderRecentFiles();
+    }
+
+    recentSearchMatches(file, query) {
+        query = String(query || '').toLowerCase().trim();
+        if (!query) return true;
+        const tags = (file.tags || []).map(tag => this.formatTagQuery(tag).toLowerCase());
+        if (query.startsWith('#')) return tags.includes(query);
+        const title = String(file.name || '').replace(/\.(md|markdown|excalidraw)$/i, '').toLowerCase();
+        const path = String(file.path || '').toLowerCase();
+        const vaultName = String(file.vaultName || this.vaultLabel(file.vault)).toLowerCase();
+        return title.includes(query)
+            || path.includes(query)
+            || vaultName.includes(query)
+            || tags.some(tag => tag.includes(query));
+    }
+
+    renderRecentFiles() {
+        const grid = document.getElementById('recent-files-grid');
+        if (!grid) return;
+        const query = document.getElementById('home-search')?.value || '';
+        const selectedVaults = this.getSelectedVaultOptions();
+        const filteredFiles = (this.homeRecentFiles || [])
+            .filter(file => this.recentSearchMatches(file, query));
+        this.homeRecentTotal = filteredFiles.length;
+        const recentFiles = filteredFiles.slice(0, this.homeRecentLimit);
+        this.homeRecentCount = recentFiles.length;
+        this.syncHomeTelemetry();
+
+        grid.innerHTML = '';
+        recentFiles.forEach(file => {
+            const timestamp = this.formatHeaderDateTime(file.mtime);
+            const title = file.name.replace(/\.(md|markdown|excalidraw)$/i, '');
+            const folderPath = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
+            const vaultPrefix = file.vaultName || this.vaultLabel(file.vault);
+            const displayFolderPath = selectedVaults.length > 1
+                ? `${vaultPrefix}${folderPath === '/' ? ' /' : ` / ${folderPath}`}`
+                : folderPath;
+
+            const card = document.createElement('div');
+            card.className = 'border border-outline-variant p-4 hover:opacity-90 transition-colors cursor-pointer file-card shadow-sm mechanical-button h-36 flex flex-col';
+            card.style.backgroundColor = 'var(--c-sidebar)';
+            card.dataset.path = selectedVaults.length > 1 ? `${file.vault}/${file.path}` : file.path;
+            card.dataset.openPath = file.path;
+            card.dataset.vault = file.vault || this.activeVault;
+            card.dataset.tags = (file.tags || []).map(tag => this.formatTagQuery(tag)).join(' ');
+
+            const inner = document.createElement('div');
+            inner.className = 'flex-grow flex flex-col overflow-hidden';
+
+            const topRow = document.createElement('div');
+            topRow.className = 'file-card-header mb-1';
+            const primary = document.createElement('div');
+            primary.className = 'file-card-primary';
+            const h3 = document.createElement('h3');
+            h3.className = 'font-mono-value font-bold text-sm truncate';
+            h3.style.color = 'var(--c-body)';
+            h3.textContent = title;
+            const fp = document.createElement('div');
+            fp.className = 'file-card-path';
+            fp.textContent = displayFolderPath;
+            primary.appendChild(h3);
+            primary.appendChild(fp);
+            const datetime = document.createElement('div');
+            datetime.className = 'file-card-datetime';
+            datetime.style.color = 'var(--c-body)';
+            datetime.innerHTML = `<span>${timestamp.date}</span><span>${timestamp.time}</span>`;
+            topRow.appendChild(primary);
+            topRow.appendChild(datetime);
+            inner.appendChild(topRow);
+
+            const p = document.createElement('p');
+            p.className = 'font-body text-xs mt-1 line-clamp-2 leading-snug break-words whitespace-normal opacity-60';
+            p.style.color = 'var(--c-body)';
+            p.textContent = file.excerpt || '';
+            inner.appendChild(p);
+
+            card.appendChild(inner);
+            card.addEventListener('click', () => this.openFile(file.path, { vault: card.dataset.vault }));
+            grid.appendChild(card);
+        });
+        requestAnimationFrame(() => this.syncRecentDatetimeVisibility());
     }
 
     async loadRecentFiles() {
@@ -2319,69 +2401,8 @@ class ObsidianReader {
             if (selectedVaults.length > 1) {
                 files.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
             }
-            const grid = document.getElementById('recent-files-grid');
-            grid.innerHTML = '';
-            const visibleRecentFiles = files
-                .filter(file => this.isVisibleFile(file.path));
-            this.homeRecentTotal = visibleRecentFiles.length;
-            const recentFiles = visibleRecentFiles.slice(0, this.homeRecentLimit);
-            this.homeRecentCount = recentFiles.length;
-            this.syncHomeTelemetry();
-
-            recentFiles.forEach(file => {
-                const timestamp = this.formatHeaderDateTime(file.mtime);
-                const title = file.name.replace(/\.(md|markdown|excalidraw)$/i, '');
-                const folderPath = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
-                const vaultPrefix = file.vaultName || this.vaultLabel(file.vault);
-                const displayFolderPath = selectedVaults.length > 1
-                    ? `${vaultPrefix}${folderPath === '/' ? ' /' : ` / ${folderPath}`}`
-                    : folderPath;
-
-                const card = document.createElement('div');
-                card.className = 'border border-outline-variant p-4 hover:opacity-90 transition-colors cursor-pointer file-card shadow-sm mechanical-button h-36 flex flex-col';
-                card.style.backgroundColor = 'var(--c-sidebar)';
-                card.dataset.path = selectedVaults.length > 1 ? `${file.vault}/${file.path}` : file.path;
-                card.dataset.openPath = file.path;
-                card.dataset.vault = file.vault || this.activeVault;
-                card.dataset.tags = (file.tags || []).map(tag => this.formatTagQuery(tag)).join(' ');
-                
-                const inner = document.createElement('div');
-                inner.className = 'flex-grow flex flex-col overflow-hidden';
-                
-                // Title and path stay left; date and time use a fixed narrow column.
-                const topRow = document.createElement('div');
-                topRow.className = 'file-card-header mb-1';
-                const primary = document.createElement('div');
-                primary.className = 'file-card-primary';
-                const h3 = document.createElement('h3');
-                h3.className = 'font-mono-value font-bold text-sm truncate';
-                h3.style.color = 'var(--c-body)';
-                h3.textContent = title;
-                const fp = document.createElement('div');
-                fp.className = 'file-card-path';
-                fp.textContent = displayFolderPath;
-                primary.appendChild(h3);
-                primary.appendChild(fp);
-                const datetime = document.createElement('div');
-                datetime.className = 'file-card-datetime';
-                datetime.style.color = 'var(--c-body)';
-                datetime.innerHTML = `<span>${timestamp.date}</span><span>${timestamp.time}</span>`;
-                topRow.appendChild(primary);
-                topRow.appendChild(datetime);
-                inner.appendChild(topRow);
-                
-                // Row 3: Excerpt
-                const p = document.createElement('p');
-                p.className = 'font-body text-xs mt-1 line-clamp-2 leading-snug break-words whitespace-normal opacity-60';
-                p.style.color = 'var(--c-body)';
-                p.textContent = file.excerpt || '';
-                inner.appendChild(p);
-                
-                card.appendChild(inner);
-                card.addEventListener('click', () => this.openFile(file.path, { vault: card.dataset.vault }));
-                grid.appendChild(card);
-            });
-            requestAnimationFrame(() => this.syncRecentDatetimeVisibility());
+            this.homeRecentFiles = files.filter(file => this.isVisibleFile(file.path));
+            this.renderRecentFiles();
         } catch (error) {
             console.error('Failed to load recent files:', error);
             this.updateStatus('Failed to load recent files');

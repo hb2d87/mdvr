@@ -3,11 +3,25 @@ set -eu
 
 CONFIG_FILE="${MDVR_CONFIG_FILE:-/app/mdvr.yaml}"
 AUTH_FILE="${MDVR_AUTH_FILE:-/run/mdvr.htpasswd}"
+DEMO_VAULT_PATH="${MDVR_DEMO_VAULT_PATH:-/vaults/demo}"
+DEMO_SEED_PATH="${MDVR_DEMO_SEED_PATH:-/app/welcome-vault}"
 
 AUTH_ENABLED="${MDVR_AUTH_ENABLED:-}"
 AUTH_USER="${MDVR_AUTH_USER:-}"
 AUTH_PASSWORD="${MDVR_AUTH_PASSWORD:-}"
 AUTH_REALM="${MDVR_AUTH_REALM:-MDVR}"
+
+is_mountpoint() {
+  target="$1"
+  grep -q " ${target} " /proc/self/mountinfo 2>/dev/null
+}
+
+if is_mountpoint "$DEMO_VAULT_PATH" && [ -d "$DEMO_SEED_PATH" ]; then
+  mkdir -p "$DEMO_VAULT_PATH"
+  if [ -z "$(find "$DEMO_VAULT_PATH" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    cp -a "$DEMO_SEED_PATH"/. "$DEMO_VAULT_PATH"/
+  fi
+fi
 
 if [ -z "$AUTH_ENABLED" ] || [ -z "$AUTH_USER" ] || [ -z "$AUTH_PASSWORD" ]; then
   CONFIG_PARSED="$(python - "$CONFIG_FILE" <<'PY'
