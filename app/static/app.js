@@ -504,7 +504,7 @@ class ObsidianReader {
     }
 
     downloadPath(path, refresh = false, vaultId = this.activeVault) {
-        const src = this.apiFileUrl(path, { refresh, vault: vaultId });
+        const src = this.apiDownloadUrl(path, { refresh, vault: vaultId });
         const a = document.createElement('a');
         a.href = src;
         a.download = path.split('/').pop() || 'download';
@@ -754,14 +754,7 @@ class ObsidianReader {
 
         if (downloadBtn) {
             downloadBtn.classList.remove('hidden');
-            downloadBtn.onclick = () => {
-                const a = document.createElement('a');
-                a.href = src;
-                a.download = path.split('/').pop() || 'download';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            };
+            downloadBtn.onclick = () => this.downloadPath(path, refresh);
         }
 
         this.setHeaderFileInfo(path, this.fileMetadataByPath.get(path)?.mtime || null);
@@ -823,14 +816,7 @@ class ObsidianReader {
 
         if (downloadBtn) {
             downloadBtn.classList.remove('hidden');
-            downloadBtn.onclick = () => {
-                const a = document.createElement('a');
-                a.href = this.apiFileUrl(path);
-                a.download = path.split('/').pop() || 'download';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            };
+            downloadBtn.onclick = () => this.downloadPath(path, refresh);
         }
 
         this.setHeaderFileInfo(path, data.mtime);
@@ -3089,6 +3075,14 @@ class ObsidianReader {
         if (vaultId) params.set('vault', vaultId);
         if (options.refresh) params.set('v', String(Date.now()));
         return `/api/file?${params.toString()}`;
+    }
+
+    apiDownloadUrl(path, options = {}) {
+        const params = new URLSearchParams({ path });
+        const vaultId = options.vault || this.activeVault;
+        if (vaultId) params.set('vault', vaultId);
+        if (options.refresh) params.set('v', String(Date.now()));
+        return `/api/download?${params.toString()}`;
     }
 
     renderMediaEmbed(href, label = '') {

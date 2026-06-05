@@ -1808,6 +1808,19 @@ def api_get_file(path: str, request: Request):
     }
 
 
+@app.get("/api/download")
+def api_download_file(path: str, request: Request):
+    active = get_active_vault(request)
+    if not can_read_file(active, path):
+        raise HTTPException(status_code=403, detail="Read is not allowed for this file type")
+    full_path = secure_path(active, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+    filename = os.path.basename(normalize_rel_path(path)) or "download"
+    return FileResponse(full_path, media_type=media_type, filename=filename)
+
+
 @app.put("/api/file")
 def api_put_file(payload: FileWriteRequest, request: Request):
     active = get_active_vault(request)
